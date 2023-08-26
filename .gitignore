@@ -9,6 +9,7 @@
 3_apply_handoff_coefficients/mid/*
 3_apply_handoff_coefficients/out/*
 3_apply_handoff_coefficients/figs/*
+4_separate_NW_CLP_data/out/*
 tmp/*
 env/*
 data
