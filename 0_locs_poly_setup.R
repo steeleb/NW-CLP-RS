@@ -48,7 +48,7 @@ p0_targets_list <- list(
   # select the NW polygons by location from the collated polygon from previous target
   tar_target(
     name = p0_get_NW_polygons,
-    command = select_polygons_by_points(p0_get_NW_NHD, p0_NW_locs_file),
+    command = select_polygons_by_points(p0_get_NW_NHD, p0_NW_locs_file, 'NW_polygons'),
     packages = c("sf", "tidyverse"),
     pattern = p0_get_NW_hucs
   ),
@@ -73,6 +73,39 @@ p0_targets_list <- list(
     read = read_sf(!!.x),
     packages = "sf"
   ),
+  # let's also bring in the ROSS CLP subset of lakes
+  tar_file_read(
+    name = p0_ROSS_CLP_file,
+    command = 'data/CLP/upper_poudre_lakes_v2.csv',
+    read = read_csv(!!.x),
+    packages = 'readr'
+  ),
+  # add NHD info to points (and load as a simple feature)
+  tar_target(
+    name = p0_make_ROSS_CLP_points,
+    command = load_points_add_NHD_info(p0_ROSS_CLP_file, p0_NW_CLP_polygons, 'ROSS_CLP', 'gen_point'),
+    packages = c('tidyverse', 'sf')
+  ),
+  # track and load the simple feature file
+  tar_file_read(
+    name = p0_ROSS_CLP_points,
+    command = p0_make_ROSS_CLP_points,
+    read = read_sf(!!.x),
+    packages = 'sf'
+  ),
+  # and then export those points to .csv
+  tar_target(
+    name = p0_make_ROSS_CLP_w_NHD,
+    command = points_to_csv(p0_ROSS_CLP_points, 'ROSS_CLP_points_with_NHD'),
+    packages = c("tidyverse", "sf")
+  ),
+  # load and track that file
+  tar_file_read(
+    name = p0_ROSS_CLP_w_NHD,
+    command = p0_make_ROSS_CLP_w_NHD,
+    read = read_csv(!!.x),
+    packages = 'sf'
+  ),
   # from the polygons, we're going to calculate the center point for each of them
   tar_target(
     name = p0_make_NW_CLP_centers,
@@ -96,7 +129,7 @@ p0_targets_list <- list(
   # And make it a sf object, adding in the NHD info from the upstream polygons file
   tar_target(
     name = p0_make_NW_station_points,
-    command = load_points_add_NHD_info(p0_NW_station_locs, p0_NW_polygons),
+    command = load_points_add_NHD_info(p0_NW_station_locs, p0_NW_polygons, 'NW', 'station'),
     packages = c("tidyverse", "sf")
   ),
   # here we track and load that simple features file

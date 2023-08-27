@@ -11,12 +11,12 @@
 #' such that this function is not generalizable.
 #' 
 #' 
-load_points_add_NHD_info <- function(points, polygons) {
+load_points_add_NHD_info <- function(points, polygons, data_grp, loc_type) {
   pts_sf <- st_as_sf(points, 
            crs = 'EPSG:4326', 
            coords = c('Longitude', 'Latitude')) %>% 
-    mutate(data_group = 'NW',
-           location_type = 'station')
+    mutate(data_group = data_grp,
+           location_type = loc_type)
   poly_crs <- st_crs(polygons)
   pts_sf <- st_transform(pts_sf, poly_crs)
   select_poly <- polygons[pts_sf,]

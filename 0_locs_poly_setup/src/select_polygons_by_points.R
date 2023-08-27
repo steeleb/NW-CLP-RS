@@ -8,7 +8,7 @@
 #' points
 #' 
 #' 
-select_polygons_by_points <- function(shapefiles, points){
+select_polygons_by_points <- function(shapefiles, points, filename){
   # load and collate all NHD polygons
   shps <- map_dfr(shapefiles, read_sf)
   # load points - crs is WGS84
@@ -19,6 +19,6 @@ select_polygons_by_points <- function(shapefiles, points){
   pts <- st_transform(pts, poly_crs)
   # filter polygons for those that are intersected by reservoir locs
   select_polygons <- shps[pts, ]
-  write_sf(select_polygons, '0_locs_poly_setup/out/NW_polygons.gpkg')
-  '0_locs_poly_setup/out/NW_polygons.gpkg'
-}
+  write_sf(select_polygons, paste0('0_locs_poly_setup/out/', filename, '.gpkg'))
+  paste0('0_locs_poly_setup/out/', filename, '.gpkg')
+  }
