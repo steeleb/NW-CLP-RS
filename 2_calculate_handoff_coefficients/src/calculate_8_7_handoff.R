@@ -8,9 +8,6 @@
 #' 
 #' 
 calculate_8_7_handoff <- function(filtered, band){
-  # make sure folder paths exist
-  dir.create('2_calculate_handoff_coefficients/mid/')
-  dir.create('2_calculate_handoff_coefficients/figs/')
   # filter for the overlapping date range from sites that have at least 10y of data
   filter_summary <- filtered %>%
     filter(date > ymd('2013-02-11'), 

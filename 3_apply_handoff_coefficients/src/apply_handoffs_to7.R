@@ -12,8 +12,6 @@
 #' 
 #' 
 apply_handoffs_to7 <- function(coefficients, data_filepath) {
-  #make sure directory exists
-  dir.create("3_apply_handoff_coefficients/mid/")
   #get some info for saving the file
   filename <- str_split(data_filepath, "/")[[1]][4]
   file_prefix <- str_split(filename, "_")[[1]][1]

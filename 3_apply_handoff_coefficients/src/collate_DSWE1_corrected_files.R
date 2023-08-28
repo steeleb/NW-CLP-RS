@@ -9,8 +9,6 @@
 #' 
 #' 
 collate_DSWE1_corrected_files <- function(version_identifier) {
-  #check for out directory
-  dir.create("3_apply_handoff_coefficients/out/")
   # get a list of the DSWE 1 corrected files
   corrected_files <- list.files("3_apply_handoff_coefficients/mid/",
                                 full.names = TRUE) %>% 

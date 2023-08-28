@@ -7,7 +7,6 @@
 #' 
 #' 
 make_Rrs_correction_figures <- function(corrected_file) {
-  # ggsave will create folder paths
   # load file and get helpful info from filename
   data <- read_feather(corrected_file)
   #get some info for saving the file

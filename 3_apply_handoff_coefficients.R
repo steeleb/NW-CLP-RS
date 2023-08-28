@@ -9,6 +9,15 @@ tar_source("3_apply_handoff_coefficients/src/")
 # compare the raw, LS7-corrected, and LS8-corrected figures.
 
 p3_targets_list <- list(
+  # prep folder structure
+  tar_target(
+    name = p3_create_folder_structure,
+    command = {
+      dir.create('3_apply_handoff_coefficients/mid/')
+      dir.create('3_apply_handoff_coefficients/out/')
+      dir.create('3_apply_handoff_coefficients/figs/')
+    }
+  ),
   # make a list of the filtered DSWE1 files from the p1 group
   tar_target(
     name = p3_filtered_DSWE1_data,

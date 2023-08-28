@@ -8,9 +8,6 @@
 #' 
 #' 
 calculate_9_8_handoff <- function(filtered, band){
-  # make sure folder paths exist
-  dir.create('2_calculate_handoff_coefficients/mid/')
-  dir.create('2_calculate_handoff_coefficients/figs/')
   # note that the filter is not as stringent, since we have a much smaller 
   # timeframe to work from. 
   filter_summary <- filtered %>%

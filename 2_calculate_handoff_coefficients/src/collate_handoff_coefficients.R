@@ -6,7 +6,6 @@
 #" 
 #" 
 collate_handoff_coefficients <- function() {
-  dir.create("2_calculate_handoff_coefficients/out/")
   #list the files in coefficients
   files <- list.files("2_calculate_handoff_coefficients/mid",
                       full.names = TRUE)
