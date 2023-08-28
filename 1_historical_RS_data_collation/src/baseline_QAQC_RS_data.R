@@ -17,17 +17,20 @@ baseline_QAQC_RS_data <- function(filepath) {
                           grepl("poly", filepath) ~ "poly",
                           grepl("center", filepath) ~ "center")
   # do the actual QAQC pass and save the filtered file
-  collated %>%
+  collated <- collated %>%
     filter(IMAGE_QUALITY >= 7, pCount_dswe1 >= 10) %>% 
     filter_at(vars(med_Red, med_Green, med_Blue, med_Nir, med_Swir1, med_Swir2),
-              all_vars(.<0.2 & .>-0.01)) %>% 
-    write_feather(file.path("1_historical_RS_data_collation/out/",
-                            paste0(file_prefix, 
-                                   "_filtered_",
-                                   DSWE, "_",
-                                   type, "_v",
-                                   file_suffix
-                                   )
-                            )
+              all_vars(.<0.2 & .>-0.01)) 
+  
+  #save the file
+  write_feather(collated,
+                file.path("1_historical_RS_data_collation/out/",
+                          paste0(file_prefix, 
+                                 "_filtered_",
+                                 DSWE, "_",
+                                 type, "_v",
+                                 file_suffix
+                                 )
+                          )
                   )
 }

@@ -8,6 +8,11 @@ tar_source("1_historical_RS_data_collation/src/")
 # branches of the Landsat_C2_SRST repository: nw-poudre-historical and nw-er3z21-historical.
 # At this time, this is run outside of the {targets} workflow presented here. 
 
+# prep folder structure
+dir.create('1_historical_RS_data_collation/in/')
+dir.create('1_historical_RS_data_collation/mid/')
+dir.create('1_historical_RS_data_collation/out/')
+
 p1_targets_list <- list(
   # download the NW and CLP data from Google Drive
   tar_target(
@@ -33,7 +38,7 @@ p1_targets_list <- list(
     name = p1_collate_historical_NW_CLP,
     command = {
       p1_download_historical_NW_CLP
-      collate_csvs_from_drive("NW-Poudre-Historical", "v2023-08-17")
+      collate_csvs_from_drive("NW-Poudre-Historical", Sys.getenv('GEE_version'))
       },
     packages = c("tidyverse", "feather")
   ),
@@ -42,7 +47,7 @@ p1_targets_list <- list(
     name = p1_collate_historical_regional,
     command = {
       p1_download_historical_regional
-      collate_csvs_from_drive("NW-Poudre-Regional", "v2023-08-17")
+      collate_csvs_from_drive("NW-Poudre-Regional", Sys.getenv('GEE_version'))
       },
     packages = c("tidyverse", "feather")
   ),
@@ -52,7 +57,7 @@ p1_targets_list <- list(
     name = p1_combined_regional_metadata_data,
     command = {
       p1_collate_historical_regional
-      combine_metadata_with_pulls("NW-Poudre-Regional", "v2023-08-17")
+      combine_metadata_with_pulls("NW-Poudre-Regional", Sys.getenv('GEE_version'))
     },
     packages = c("tidyverse", "feather")
   ),
@@ -61,7 +66,7 @@ p1_targets_list <- list(
     name = p1_combined_NW_CLP_metadata_data,
     command = {
       p1_collate_historical_NW_CLP
-      combine_metadata_with_pulls("NW-Poudre-Historical", "v2023-08-17")
+      combine_metadata_with_pulls("NW-Poudre-Historical", Sys.getenv('GEE_version'))
     },
     packages = c("tidyverse", "feather")
   ),
