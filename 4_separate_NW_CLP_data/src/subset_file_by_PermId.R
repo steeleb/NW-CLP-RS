@@ -1,5 +1,5 @@
 subset_file_by_PermId <- function(data_file, Perm_Id_list, data_grp) {
-  data <- data_file 
+  data <- read_feather(data_file) 
   subset <- data %>% 
     filter(Permanent_Identifier %in% !!Perm_Id_list)
   # get some info for parsing out the data to be joined
@@ -15,13 +15,13 @@ subset_file_by_PermId <- function(data_file, Perm_Id_list, data_grp) {
                           paste0(data_grp,
                                  '_', file_type,
                                  '_', DSWE,
-                                 '_for_analysis_v',
+                                 '_for_analysis_',
                                  Sys.getenv('collate_version'),
                                  '.feather')))
   file.path('4_separate_NW_CLP_data/out/',
             paste0(data_grp,
                    '_', file_type,
                    '_', DSWE,
-                   '_for_analysis_v',
+                   '_for_analysis_',
                    Sys.getenv('collate_version'),
                    '.feather'))}

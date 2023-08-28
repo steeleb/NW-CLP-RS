@@ -8,6 +8,13 @@ tar_source("4_separate_NW_CLP_data/src/")
 # the ROSSyndicate Google Drive
 
 p4_targets_list <- list(
+  # prep folder structure
+  tar_target(
+    name = p4_create_folder_structure,
+    command = {
+      dir.create('4_separate_NW_CLP_data/out/')
+    }
+  ),
   # join collated, corrected GEE output with spatial information.
   # first for points
   tar_target(
@@ -28,7 +35,17 @@ p4_targets_list <- list(
     read = read_feather(!!.x),
     packages = 'feather'
   ),
-  # uplaod to Drive
+  # upload to Drive
+  tar_target(
+    name = p4_NW_CLP_points_to_Drive,
+    command = {
+      drive_auth(email = Sys.getenv('google_email'))
+      folder = drive_find(pattern = 'NW_CLP_for_analysis')
+      drive_upload(p4_add_spatial_info_NW_CLP_points, 
+                           path = as_id(folder$id))
+      },
+    packages = 'googledrive'  
+  ),
   # and also for the polygons
   tar_target(
     name = p4_add_spatial_info_NW_CLP_polygons,
@@ -55,13 +72,20 @@ p4_targets_list <- list(
     packages = 'feather'
   ),
   # uploaad to Drive
-  # tar_target(
-  #   
-  # ),
+  tar_target(
+    name = p4_CLP_points_to_Drive,
+    command = {
+      drive_auth(email = Sys.getenv('google_email'))
+      folder = drive_find(pattern = 'NW_CLP_for_analysis')
+      drive_upload(p4_subset_points_for_CLP, 
+                   path = as_id(folder$id))
+    },
+    packages = 'googledrive'  
+  ),
   # subset the files for ROSS CLP data
   tar_target(
     name = p4_subset_points_for_ROSS_CLP,
-    command = subset_file_by_PermId(p4_NW_CLP_points_dataset_with_info, 
+    command = subset_file_by_PermId(p4_add_spatial_info_NW_CLP_points, 
                                     unique(p0_ROSS_CLP_w_NHD$Permanent_Identifier),
                                     'ROSS_CLP'),
     packages = c('tidyverse', 'feather')
@@ -73,7 +97,18 @@ p4_targets_list <- list(
     read = read_feather(!!.x),
     packages = 'feather'
   ),
-  # subset the files fr NW data
+  # uploaad to Drive
+  tar_target(
+    name = p4_ROSS_CLP_points_to_Drive,
+    command = {
+      drive_auth(email = Sys.getenv('google_email'))
+      folder = drive_find(pattern = 'NW_CLP_for_analysis')
+      drive_upload(p4_subset_points_for_ROSS_CLP, 
+                   path = as_id(folder$id))
+    },
+    packages = 'googledrive'  
+  ),
+  # subset the files for NW data
   tar_target(
     name = p4_subset_points_for_NW,
     command = subset_file_by_data_group(p4_add_spatial_info_NW_CLP_points, 'NW'),
@@ -85,11 +120,18 @@ p4_targets_list <- list(
     command = p4_subset_points_for_NW,
     read = read_feather(!!.x),
     packages = 'feather'
-  )
+  ),
   # upload to Drive
-  # tar_target(
-  # 
-  # )
+  tar_target(
+    name = p4_NW_points_to_Drive,
+    command = {
+      drive_auth(email = Sys.getenv('google_email'))
+      folder = drive_find(pattern = 'NW_CLP_for_analysis')
+      drive_upload(p4_subset_points_for_NW, 
+                   path = as_id(folder$id))
+    },
+    packages = 'googledrive'  
+  )
 )
   
   

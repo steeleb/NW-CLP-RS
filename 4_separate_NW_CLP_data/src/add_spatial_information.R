@@ -1,7 +1,5 @@
 
 add_spatial_information <- function(data_file, spatial_info, data_type) {
-  # check for out directory
-  dir.create('4_separate_NW_CLP_data/out/')
   # get some info for parsing out the data to be joined
   filename <- str_split(data_file, "/")[[1]][4]
   # break out file prefix
@@ -27,20 +25,22 @@ add_spatial_information <- function(data_file, spatial_info, data_type) {
       st_drop_geometry()
     data <- left_join(data, spatial_info)
   }
+  #save the file
   write_feather(data, 
                 file.path('4_separate_NW_CLP_data/out/',
                           paste0(file_prefix,
                                  '_', file_type,
                                  '_', DSWE,
-                                 '_for_analysis_v',
+                                 '_for_analysis_',
                                  Sys.getenv('collate_version'),
                                  '.feather')
                                 ))
+  #return the filepath
   file.path('4_separate_NW_CLP_data/out/',
             paste0(file_prefix,
                    '_', file_type,
                    '_', DSWE,
-                   '_for_analysis_v',
+                   '_for_analysis_',
                    Sys.getenv('collate_version'),
                    '.feather'))
 }
