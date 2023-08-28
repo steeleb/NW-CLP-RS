@@ -27,7 +27,7 @@ p3_targets_list <- list(
                          full.names = TRUE) %>% 
         .[grepl("filtered", .)] %>% 
         .[grepl("DSWE1", .)] %>% 
-        .[grepl("v2023-08-17", .)]
+        .[grepl(Sys.getenv("GEE_version"), .)]
     }
   ),
   # using the coefficients from the p2 group (which were DSWE1 only), we"ll
@@ -53,7 +53,7 @@ p3_targets_list <- list(
     command = {
       p3_apply_DSWE1_handoffs_to7
       p3_apply_DSWE1_handoffs_to8
-      collate_DSWE1_corrected_files("v2023-08-17")
+      collate_DSWE1_corrected_files(Sys.getenv("GEE_version"))
       },
     packages = c("tidyverse", "feather")
   ),
