@@ -1,7 +1,7 @@
 #' Function to make first-pass QAQC of the RS data
 #'
 #' @param filepath filepath of a collated .feather file output from the 
-#' function "combine_metadatat_with_pulls.R"
+#' function "combine_metadata_with_pulls.R"
 #' @returns silently creates filtered .feather file from collated files in out 
 #' folder and dumps filtered into out folder
 #' 
@@ -33,4 +33,6 @@ baseline_QAQC_RS_data <- function(filepath) {
                                  )
                           )
                   )
+  
+  NULL # this should return a null
 }
