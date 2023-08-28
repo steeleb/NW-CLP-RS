@@ -9,9 +9,6 @@
 #' 
 #' 
 get_polygons <-  function(HUC, minimum_sqkm) {
-  #check for out folder, create if not present
-  dir.create('0_locs_poly_setup/out/')
-  
   # get temp directory for download of HR .gdb files
   temp_dir <- tempdir()
   

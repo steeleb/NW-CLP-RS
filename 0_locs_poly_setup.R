@@ -8,6 +8,9 @@ tar_source("0_locs_poly_setup/src/")
 # file of each type as needed for the RS workflow. CLP = Cache La Poudre, 
 # NW = Northern Water.
 
+# prep folder structure
+dir.create('0_locs_poly_setup/out/')
+
 p0_targets_list <- list(
   # get the polygons for CLP watershed using HUC8
   tar_target(
