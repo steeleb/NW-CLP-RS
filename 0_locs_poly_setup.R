@@ -63,7 +63,9 @@ p0_targets_list <- list(
   # where needed 
   tar_target(
     name = p0_make_NW_CLP_polygons,
-    command = combine_and_simplify_sfs(p0_CLP_polygons, "CLP", p0_NW_polygons, "NW", "CLP_NW_polygons"),
+    command = combine_and_simplify_sfs(p0_CLP_polygons, "CLP", 
+                                       p0_NW_polygons, "NW", 
+                                       "CLP_NW_polygons"),
     packages = c("sf", "tidyverse")
   ),
   # and then track and load the resulting polygon file
