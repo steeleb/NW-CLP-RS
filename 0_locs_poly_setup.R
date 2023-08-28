@@ -8,10 +8,15 @@ tar_source("0_locs_poly_setup/src/")
 # file of each type as needed for the RS workflow. CLP = Cache La Poudre, 
 # NW = Northern Water.
 
-# prep folder structure
-dir.create('0_locs_poly_setup/out/')
-
 p0_targets_list <- list(
+  # prep folder structure
+  tar_target(
+    name = p0_create_folder_structure,
+    command = {
+      dir.create('0_locs_poly_setup/out/')
+      dir.create('0_locs_poly_setup/nhd/')
+    }
+  ),
   # get the polygons for CLP watershed using HUC8
   tar_target(
     name = p0_make_CLP_polygon,
@@ -48,17 +53,25 @@ p0_targets_list <- list(
     packages = c("sf", "nhdplusTools", "tidyverse"),
     pattern = map(p0_get_NW_hucs)
   ),
+  # target to combine the NHD polygons where NW is
+  tar_target(
+    name = p0_combined_NHD_HUCS,
+    command = {
+      p0_get_NW_NHD
+      combine_NHD_HUCS()
+      },
+    packages = c("sf", "tidyverse")
+  ),
   # select the NW polygons by location from the collated polygon from previous target
   tar_target(
     name = p0_get_NW_polygons,
-    command = select_polygons_by_points(p0_get_NW_NHD, p0_NW_locs_file, 'NW_polygons'),
-    packages = c("sf", "tidyverse"),
-    pattern = p0_get_NW_hucs
+    command = select_polygons_by_points(p0_combined_NHD_HUCS, p0_NW_locs_file, 'NW_polygons'),
+    packages = c("sf", "tidyverse")
   ),
   # track and load the polygons file for NW sites
   tar_file_read(
     name = p0_NW_polygons,
-    command = p0_get_NW_polygons[1], # output from p0_NW_polygons is a list! the values are the same for all list members 
+    command = p0_get_NW_polygons, # output from p0_NW_polygons is a list! the values are the same for all list members 
     read = read_sf(!!.x),
     packages = "sf"
   ),
