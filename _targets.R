@@ -21,9 +21,5 @@ tar_source(files = c(
 # Full targets list 
 c(a_locs_poly_setup,
   b_site_RS_data,
-  c_regional_RS_data,
-  c_targets_list,
-  d_targets_list,
-  e_targets_list,
-  f_targets_list
-  )
+  c_regional_RS_data
+)
