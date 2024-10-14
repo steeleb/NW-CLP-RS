@@ -10,14 +10,14 @@
 #' 
 collate_handoff_coefficients <- function() {
   #list the files in coefficients
-  files <- list.files("d_calculate_handoff_coefficients/mid",
+  files <- list.files("e_calculate_handoff_coefficients/mid",
                       full.names = TRUE)
   # collate those suckers
   collated <- map_dfr(files, read_csv)
   #save the file and return the file name
   write_csv(collated, 
-            file.path("d_calculate_handoff_coefficients/out/",
+            file.path("e_calculate_handoff_coefficients/out/",
                       "Landsat_handoff_coefficients.csv"))
-  file.path("d_calculate_handoff_coefficients/out/",
+  file.path("e_calculate_handoff_coefficients/out/",
             "Landsat_handoff_coefficients.csv")
 }

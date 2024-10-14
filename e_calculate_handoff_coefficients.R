@@ -13,90 +13,115 @@ tar_source("e_calculate_handoff_coefficients/src/")
 # Landsat 8/9 handoff for workflows that would benefit from a harmonized Aerosol
 # band
 
-# create folder structure
-suppressWarnings({
-  dir.create("e_calculate_handoff_coefficients/mid/")
-  dir.create("e_calculate_handoff_coefficients/out/")
-  dir.create("e_calculate_handoff_coefficients/figs/")
-})
+e_calculate_handoff_coefficients <- list(
+  
+  # check for proper directory structure ------------------------------------
+  
+  tar_target(
+    name = e_check_dir_structure,
+    command = {
+      directories = c("e_calculate_handoff_coefficients/mid/",
+                      "e_calculate_handoff_coefficients/out/",
+                      "e_calculate_handoff_coefficients/figs/")
+      walk(directories, function(dir) {
+        if(!dir.exists(dir)){
+          dir.create(dir)
+        }
+      })
+    }
+  ),
+  
 
-d_targets_list <- list(
+  # set up list of bands ----------------------------------------------------
+  
   # set list of LS5-9 common bands
   tar_target(
-    name = d_5_9_band_list,
-    command = {
-      c_QAQC_filtered_data
-      c("med_Red", "med_Green", "med_Blue", "med_Nir", "med_Swir1", "med_Swir2")
-    }
+    name = e_5_9_band_list,
+    command = c("med_Red", "med_Green", "med_Blue", "med_Nir", "med_Swir1", "med_Swir2")
   ),
   # set list of common 8/9 bands
   tar_target(
-    name = d_8_9_band_list,
-    command = {
-      c_QAQC_filtered_data
-      c("med_Aerosol", "med_Red", "med_Green", "med_Blue", "med_Nir", "med_Swir1", "med_Swir2")
-    }
+    name = e_8_9_band_list,
+    command = c("med_Aerosol", "med_Red", "med_Green", "med_Blue", "med_Nir", "med_Swir1", "med_Swir2")
   ),
-  # track and load the filtered DSWE1 regional centers file
+  
+
+  # point to the regional file ----------------------------------------------
+  # this is what defines the regional handoffs
+  
+  # track and load the filtered DSWE1 regional file
   tar_file_read(
-    name = d_DSWE1_regional_file,
+    name = e_DSWE1_regional_file,
     command = {
-      c_QAQC_filtered_data
-      paste0("c_historical_RS_data_collation/out/NW-Poudre-Regional_filtered_DSWE1_point_v",
-             Sys.getenv("collation_date"),
+      d_QAQC_filtered_data
+      e_check_dir_structure
+      paste0("d_baseline_QAQC/out/NW-Poudre-Regional_filtered_DSWE1_point_meta_v",
+             c_yml$run_date,
              ".feather")
       },
     read = read_feather(!!.x),
     packages = "feather"
   ),
+  
+
+  # calculate various handoff coefficients ----------------------------------
+
   # calculate handoff for LS 5 to LS 7
   tar_target(
-    name = d_regional_5_7_handoff,
-    command = calculate_5_7_handoff(filtered = d_DSWE1_regional_file,
-                                    band = d_5_9_band_list),
+    name = e_regional_5_7_handoff,
+    command = calculate_5_7_handoff(filtered = e_DSWE1_regional_file,
+                                    band = e_5_9_band_list),
     packages = "tidyverse",
-    pattern = map(d_5_9_band_list)
+    pattern = map(e_5_9_band_list)
   ),
+  
   # calculate handoff for LS 8 to LS 7
   tar_target(
-    name = d_regional_8_7_handoff,
-    command = calculate_8_7_handoff(filtered = d_DSWE1_regional_file, 
-                                    band = d_5_9_band_list),
+    name = e_regional_8_7_handoff,
+    command = calculate_8_7_handoff(filtered = e_DSWE1_regional_file, 
+                                    band = e_5_9_band_list),
     packages = "tidyverse",
-    pattern = map(d_5_9_band_list)
+    pattern = map(e_5_9_band_list)
   ),
+  
   # calculate handoff for LS 7 to LS 8
   tar_target(
-    name = d_regional_7_8_handoff,
-    command = calculate_7_8_handoff(filtered = d_DSWE1_regional_file, 
-                                    band = d_5_9_band_list),
+    name = e_regional_7_8_handoff,
+    command = calculate_7_8_handoff(filtered = e_DSWE1_regional_file, 
+                                    band = e_5_9_band_list),
     packages = "tidyverse",
-    pattern = map(d_5_9_band_list)
+    pattern = map(e_5_9_band_list)
   ),
+  
   # calculate handoff for LS 9 to LS 8
   tar_target(
-    name = d_regional_9_8_handoff,
-    command = calculate_9_8_handoff(filtered = d_DSWE1_regional_file, 
-                                    band = d_8_9_band_list),
+    name = e_regional_9_8_handoff,
+    command = calculate_9_8_handoff(filtered = e_DSWE1_regional_file, 
+                                    band = e_8_9_band_list),
     packages = "tidyverse",
-    pattern = map(d_8_9_band_list)
+    pattern = map(e_8_9_band_list)
   ),
+
+  
+  # collate and track the files ---------------------------------------------
+  
   # collate all the coefficient calcs into one file
   tar_target(
-    name = d_make_collated_handoff_coefficients,
+    name = e_make_collated_handoff_coefficients,
     command = {
-      d_regional_5_7_handoff
-      d_regional_8_7_handoff
-      d_regional_7_8_handoff
-      d_regional_9_8_handoff
+      e_regional_5_7_handoff
+      e_regional_8_7_handoff
+      e_regional_7_8_handoff
+      e_regional_9_8_handoff
       collate_handoff_coefficients()
     },
     packages = "tidyverse"
   ),
+  
   # load and track the coefficient file
   tar_file_read(
-    name = d_collated_handoff_coefficients,
-    command = d_make_collated_handoff_coefficients,
+    name = e_collated_handoff_coefficients,
+    command = e_make_collated_handoff_coefficients,
     read = read_csv(!!.x),
     packages = "readr"
   )

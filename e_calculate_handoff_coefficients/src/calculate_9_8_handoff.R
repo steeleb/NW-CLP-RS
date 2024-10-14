@@ -16,20 +16,20 @@ calculate_9_8_handoff <- function(filtered, band){
   filter_summary <- filtered %>%
     filter(date > ymd("2021-09-27"), 
            mission %in% c("LANDSAT_8", "LANDSAT_9")) %>% 
-    group_by(mission, rowid) %>% 
+    group_by(mission, r_id) %>% 
     summarize(n_years = length(unique(year(date)))) %>% 
     filter(n_years >= 2) %>% 
     ungroup()
   
-  # filter out for Landsat 8, limiting input sites to those with 1y
+  # filter out for Landsat 8 - sites with at least 2y of data
   y <- filtered %>%
     filter(date > ymd("2021-09-27"), 
            mission == "LANDSAT_8") %>% 
     inner_join(., filter_summary)
+  # make quantile summary of band, dropping 0 and 1
   y_q <- y %>%
-    .[,band] %>%
-    as.vector(.)
-  y_q <- y_q[[1]] %>%
+    pull(band) %>%
+    as.numeric(.) %>% 
     quantile(., seq(.01,.99, .01))
   
   # do the same for LS 9
@@ -37,17 +37,16 @@ calculate_9_8_handoff <- function(filtered, band){
     filter(date > ymd("2021-09-27"), 
            mission == "LANDSAT_9") %>% 
     inner_join(., filter_summary)
+  # make quantile summary of band, dropping 0 and 1
   x_q <- x %>%
-    .[,band] %>%
-    as.vector(.)
-  # and calculate quantiles, dropping 0 and 1
-  x_q <- x_q[[1]] %>%
+    pull(band) %>%
+    as.numeric(.) %>% 
     quantile(., seq(.01,.99, .01))
   
   poly <- lm(y_q ~ poly(x_q, 2, raw = T))
   
   # plot and save handoff fig
-  jpeg(file.path("d_calculate_handoff_coefficients/figs/", 
+  jpeg(file.path("e_calculate_handoff_coefficients/figs/", 
        paste0(band, "_9_8_poly_handoff.jpg")), 
        width = 350, height = 350)
   plot(y_q ~ x_q,
@@ -61,7 +60,7 @@ calculate_9_8_handoff <- function(filtered, band){
   dev.off()
   
   # plot and save residuals from fit
-  jpeg(file.path("d_calculate_handoff_coefficients/figs/", 
+  jpeg(file.path("e_calculate_handoff_coefficients/figs/", 
                  paste0(band, "_9_8_poly_residuals.jpg")), 
        width = 350, height = 200)
   plot(poly$residuals,
@@ -79,6 +78,6 @@ calculate_9_8_handoff <- function(filtered, band){
                sat_to = "LANDSAT_8",
                L8_scene_count = length(unique(y$system.index)),
                L9_scene_count = length(unique(x$system.index))) 
-  write_csv(summary, file.path("d_calculate_handoff_coefficients/mid/",
+  write_csv(summary, file.path("e_calculate_handoff_coefficients/mid/",
                                paste0(band, "_9_8_poly_handoff.csv")))
 }

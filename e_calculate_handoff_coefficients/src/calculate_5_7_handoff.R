@@ -16,7 +16,7 @@ calculate_5_7_handoff <- function(filtered, band){
     filter(date > ymd("1999-04-15"), 
            date < ymd("2013-06-05"), 
            mission %in% c("LANDSAT_5", "LANDSAT_7")) %>% 
-    group_by(mission, rowid) %>% 
+    group_by(mission, r_id) %>% 
     summarize(n_years = length(unique(year(date)))) %>% 
     filter(n_years >= 10) %>% 
     ungroup()
@@ -27,28 +27,27 @@ calculate_5_7_handoff <- function(filtered, band){
            date < ymd("2013-06-05"), 
            mission == "LANDSAT_7") %>%
     inner_join(., filter_summary)
+  # make quantile summary of band, dropping 0 and 1
   y_q <- y %>%
-    .[,band] %>%
-    as.vector(.)
-  # and calculate quantiles, dropping 0 and 1
-  y_q <- y_q[[1]] %>%
+    pull(band) %>%
+    as.numeric(.) %>% 
     quantile(., seq(.01,.99, .01))
   
   # do the same for LS 5
   x <- filtered %>%
     filter(date > ymd("1999-04-15"), date < ymd("2013-06-05"), mission == "LANDSAT_5") %>% 
     inner_join(., filter_summary)
+  # make quantile summary of band, dropping 0 and 1
   x_q <- x %>%
-    .[,band] %>%
-    as.vector(.)
-  x_q <- x_q[[1]] %>%
+    pull(band) %>%
+    as.numeric(.) %>% 
     quantile(., seq(.01,.99, .01))
   
   poly <- lm(y_q ~ poly(x_q, 2, raw = T))
   
   # plot and save handoff fig
-  jpeg(file.path("d_calculate_handoff_coefficients/figs/", 
-       paste0(band, "_5_7_poly_handoff.jpg")), 
+  jpeg(file.path("e_calculate_handoff_coefficients/figs/", 
+                 paste0(band, "_5_7_poly_handoff.jpg")), 
        width = 350, height = 350)
   plot(y_q ~ x_q,
        main = paste0(band, " LS 5-7 handoff"),
@@ -61,7 +60,7 @@ calculate_5_7_handoff <- function(filtered, band){
   dev.off()
   
   # plot and save residuals from fit
-  jpeg(file.path("d_calculate_handoff_coefficients/figs/", 
+  jpeg(file.path("e_calculate_handoff_coefficients/figs/", 
                  paste0(band, "_5_7_poly_residuals.jpg")), 
        width = 350, height = 200)
   plot(poly$residuals,
@@ -70,15 +69,15 @@ calculate_5_7_handoff <- function(filtered, band){
   
   # create a summary table
   summary <- tibble(band = band, 
-               intercept = poly$coefficients[[1]], 
-               B1 = poly$coefficients[[2]], 
-               B2 = poly$coefficients[[3]],
-               min_in_val = min(x_q),
-               max_in_val = max(x_q),
-               sat_corr = "LANDSAT_5",
-               sat_to = "LANDSAT_7",
-               L7_scene_count = length(unique(y$system.index)),
-               L5_scene_count = length(unique(x$system.index))) 
-  write_csv(summary, file.path("d_calculate_handoff_coefficients/mid/",
+                    intercept = poly$coefficients[[1]], 
+                    B1 = poly$coefficients[[2]], 
+                    B2 = poly$coefficients[[3]],
+                    min_in_val = min(x_q),
+                    max_in_val = max(x_q),
+                    sat_corr = "LANDSAT_5",
+                    sat_to = "LANDSAT_7",
+                    L7_scene_count = length(unique(y$system.index)),
+                    L5_scene_count = length(unique(x$system.index))) 
+  write_csv(summary, file.path("e_calculate_handoff_coefficients/mid/",
                                paste0(band, "_5_7_poly_handoff.csv")))
 }

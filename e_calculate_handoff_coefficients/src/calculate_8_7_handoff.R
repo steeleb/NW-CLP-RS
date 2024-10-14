@@ -11,27 +11,26 @@
 #' 
 #' 
 calculate_8_7_handoff <- function(filtered, band){
-  # filter for the overlapping date range from sites that have at least 10y of data
+  # filter for the overlapping date range from sites that have at least 7y of data
   filter_summary <- filtered %>%
     filter(date > ymd("2013-02-11"), 
            date < ymd("2022-04-16"), 
            mission %in% c("LANDSAT_8", "LANDSAT_7")) %>% 
-    group_by(mission, rowid) %>% 
+    group_by(mission, r_id) %>% 
     summarize(n_years = length(unique(year(date)))) %>% 
-    filter(n_years >= 10) %>% 
+    filter(n_years >= 7) %>% 
     ungroup()
   
-  # filter out for Landsat 7, limiting input sites to those with 10y
+  # filter out for Landsat 7, limiting input sites to those with 7y
   y <- filtered %>% 
     filter(date > ymd("2013-02-11"), 
            date < ymd("2022-04-16"), 
            mission == "LANDSAT_7") %>% 
     inner_join(., filter_summary)
+  # make quantile summary of band, dropping 0 and 1
   y_q <- y %>%
-    .[,band] %>%
-    as.vector(.)
-  # and calculate quantiles, dropping 0 and 1
-  y_q <- y_q[[1]] %>%
+    pull(band) %>%
+    as.numeric(.) %>% 
     quantile(., seq(.01,.99, .01))
   
   # do the same for LS 8
@@ -40,16 +39,16 @@ calculate_8_7_handoff <- function(filtered, band){
            date < ymd("2022-04-16"), 
            mission == "LANDSAT_8") %>% 
     inner_join(., filter_summary)
+  # make quantile summary of band, dropping 0 and 1
   x_q <- x %>%
-    .[,band] %>%
-    as.vector(.)
-  x_q <- x_q[[1]] %>%
+    pull(band) %>%
+    as.numeric(.) %>% 
     quantile(., seq(.01,.99, .01))
   
   poly <- lm(y_q ~ poly(x_q, 2, raw = T))
   
   # plot and save handoff fig
-  jpeg(file.path("d_calculate_handoff_coefficients/figs/", 
+  jpeg(file.path("e_calculate_handoff_coefficients/figs/", 
        paste0(band, "_8_7_poly_handoff.jpg")), 
        width = 350, height = 350)
   plot(y_q ~ x_q,
@@ -63,7 +62,7 @@ calculate_8_7_handoff <- function(filtered, band){
   dev.off()
   
   # plot and save residuals from fit
-  jpeg(file.path("d_calculate_handoff_coefficients/figs/", 
+  jpeg(file.path("e_calculate_handoff_coefficients/figs/", 
                  paste0(band, "_8_7_poly_residuals.jpg")), 
        width = 350, height = 200)
   plot(poly$residuals,
@@ -81,6 +80,6 @@ calculate_8_7_handoff <- function(filtered, band){
                sat_to = "LANDSAT_7",
                L7_scene_count = length(unique(y$system.index)),
                L8_scene_count = length(unique(x$system.index))) 
-  write_csv(summary, file.path("c_calculate_handoff_coefficients/mid/",
+  write_csv(summary, file.path("e_calculate_handoff_coefficients/mid/",
                                paste0(band, "_8_7_poly_handoff.csv")))
 }
