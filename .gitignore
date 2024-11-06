@@ -20,6 +20,7 @@ f_apply_handoff_coefficients/figs/*
 g_separate_NW_CLP_data/out/*
 compare_masks/*
 
+# python venv folder
 env/*
 
 ## OneDrive Symlink
