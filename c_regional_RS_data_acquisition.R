@@ -4,23 +4,6 @@ library(reticulate)
 
 yaml_file <- "nw-poudre-regional-config.yml"
 
-# MUST READ ---------------------------------------------------------------
-
-# IMPORTANT NOTE:
-#
-# you must execute the command 'earthengine authenticate' in a zsh terminal
-# before initializing this workflow. See the repository README for complete
-# dependencies and troubleshooting.
-
-# RUNNING {TARGETS}:
-#
-# use the file 'run_targets.Rmd', which includes EE authentication.
-
-
-# Set up python virtual environment ---------------------------------------
-
-tar_source("pySetup.R")
-
 
 # Source functions --------------------------------------------------------
 
@@ -72,7 +55,8 @@ c_regional_RS_data <- list(
       format_yaml(yaml = c_config_file,
                   parent_path = "c_regional_RS_data_acquisition")
     },
-    packages = c("yaml", "tidyverse") #for some reason, you have to load TV.
+    packages = c("yaml", "tidyverse"), 
+    cue = tar_cue("always")
   ),
   
   # load, format, save user locations as an updated csv called locs.csv
@@ -91,34 +75,46 @@ c_regional_RS_data <- list(
     command = get_WRS_tiles(detection_method = "site", 
                             yaml = c_yml, 
                             locs = c_locs,
-                            parent_path = "c_regional_RS_data_acquisition"),
-    packages = c("readr", "sf")
+                            parent_path = "c_regional_RS_data_acquisition")
   ),
   
+  # check to see that all sites and buffers are completely contained by each pathrow
+  # and assign wrs path-rows for all sites based on configuration buffer.
+  tar_target(
+    name = c_locs_filtered,
+    command = check_if_fully_within_pr(WRS_pathrow = c_WRS_tiles, 
+                                       locations = c_locs, 
+                                       parent_path = "c_regional_RS_data_acquisition",
+                                       yml = c_yml),
+    pattern = map(c_WRS_tiles),
+    packages = c("tidyverse", "sf", "arrow")
+  ),
   
   # send the tasks to earth engine! -----------------------------------------
   
   # run the Landsat pull as function per tile
   tar_target(
-    name = c_eeRun,
+    name = c_eeRun_regional,
     command = {
       c_yml
-      c_locs
+      c_locs_filtered
       run_GEE_per_tile(WRS_tile = c_WRS_tiles,
                        parent_path = "c_regional_RS_data_acquisition")
     },
     pattern = map(c_WRS_tiles),
-    packages = "reticulate"
+    packages = "reticulate",
+    deployment = "main"
   ),
   
   # wait for all earth engine tasks to be completed
   tar_target(
     name = c_ee_tasks_complete,
     command = {
-      c_eeRun
+      c_eeRun_regional
       source_python("c_regional_RS_data_acquisition/py/poi_wait_for_completion.py")
     },
-    packages = "reticulate"
+    packages = "reticulate",
+    deployment = "main"
   ),
   
   
@@ -146,7 +142,7 @@ c_regional_RS_data <- list(
                               version_identifier = c_yml$run_date,
                               parent_path = "c_regional_RS_data_acquisition")
     },
-    packages = c("tidyverse", "feather")
+    packages = c("tidyverse", "arrow")
   ),
   
   # and collate the data with metadata
@@ -157,7 +153,7 @@ c_regional_RS_data <- list(
       add_metadata(yaml = c_yml,
                    parent_path = "c_regional_RS_data_acquisition")
     },
-    packages = c("tidyverse", "feather")
+    packages = c("tidyverse", "arrow")
   )
   
 )

@@ -17,10 +17,6 @@ site_yaml_file <- "nw-poudre-historical-config.yml"
 # use the file 'run_targets.Rmd', which includes EE authentication.
 
 
-# Set up python virtual environment ---------------------------------------
-
-tar_source("pySetup.R")
-
 # Source functions --------------------------------------------------------
 
 tar_source("src/")
@@ -81,7 +77,8 @@ b_site_RS_data <- list(
       b_check_dir_structure
       grab_locs(yaml = b_yml,
                 parent_path = "b_site_RS_data_acquisition")
-    }
+    },
+    cue = tar_cue("always")
   ),
   
   # get WRS tiles
@@ -91,7 +88,18 @@ b_site_RS_data <- list(
                             yaml = b_yml, 
                             locs = b_locs,
                             parent_path = "b_site_RS_data_acquisition"),
-    packages = c("readr", "sf")
+  ),
+  
+  # check to see that all sites and buffers are completely contained by each pathrow
+  # and assign wrs path-rows for all sites based on configuration buffer.
+  tar_target(
+    name = b_locs_filtered,
+    command = check_if_fully_within_pr(WRS_pathrow = b_WRS_tiles, 
+                                       locations = b_locs, 
+                                       parent_path = "b_site_RS_data_acquisition",
+                                       yml = b_yml),
+    pattern = map(b_WRS_tiles),
+    packages = c("tidyverse", "sf", "arrow")
   ),
   
   
@@ -99,25 +107,27 @@ b_site_RS_data <- list(
   
   # run the Landsat pull as function per tile
   tar_target(
-    name = b_eeRun,
+    name = b_eeRun_NW_CLP,
     command = {
       b_yml
-      b_locs
-      run_GEE_per_tile(WRS_tile = b_WRS_tiles,
+      b_locs_filtered
+      run_GEE_per_tile(WRS_pathrow = b_WRS_tiles,
                        parent_path = "b_site_RS_data_acquisition")
     },
-    pattern = map(b_WRS_tiles),
-    packages = "reticulate"
+    pattern = b_WRS_tiles,
+    packages = "reticulate",
+    deployment = "main"
   ),
-  
-  # wait for all earth engine tasks to be completed
+
+    # wait for all earth engine tasks to be completed
   tar_target(
     name = b_ee_tasks_complete,
     command = {
-      b_eeRun
+      b_eeRun_NW_CLP
       source_python("b_site_RS_data_acquisition/py/poi_wait_for_completion.py")
     },
-    packages = "reticulate"
+    packages = "reticulate",
+    deployment = "main"
   ),
   
   
@@ -145,7 +155,7 @@ b_site_RS_data <- list(
                               version_identifier = b_yml$run_date,
                               parent_path = "b_site_RS_data_acquisition")
     },
-    packages = c("tidyverse", "feather")
+    packages = c("tidyverse", "arrow")
   ),
   
   # and collate the data with metadata
@@ -156,7 +166,7 @@ b_site_RS_data <- list(
       add_metadata(yaml = b_yml,
                    parent_path = "b_site_RS_data_acquisition")
     },
-    packages = c("tidyverse", "feather")
+    packages = c("tidyverse", "arrow")
   )
   
 )
