@@ -1,11 +1,33 @@
+
 # Load packages required to define the pipeline:
 library(targets)
-library(tarchetypes) # Load other packages as needed.
+library(tarchetypes)
+library(reticulate)
+library(crew)
 
-# Set target options:
-tar_option_set(
-  packages = c("tidyverse", "sf")
+# Set up python virtual environment ---------------------------------------
+
+tar_source("pySetup.R")
+
+# Set up crew controller for multicore processing ------------------------
+
+controller_cores <- crew_controller_local(
+  workers = parallel::detectCores()-1,
+  seconds_idle = 12
 )
+
+# Set target options: ---------------------------------------
+
+tar_option_set(
+  # packages that {targets} need to run for this workflow
+  packages = c("tidyverse", "sf"),
+  memory = "transient",
+  garbage_collection = TRUE,
+  # set up crew controller
+  controller = controller_cores
+)
+
+# collate targets lists and files ----------------------------
 
 # source functions
 tar_source(files = c(
