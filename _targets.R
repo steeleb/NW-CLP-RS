@@ -13,10 +13,12 @@ tar_source(files = c(
   "b_site_RS_data_acquisition.R",
   "c_regional_RS_data_acquisition.R",
   "d_baseline_QAQC.R",
-  "e_calculate_handoff_coefficients.R",
-  "f_apply_handoff_coefficients.R",
-  "g_separate_NW_CLP_data.R"
-))
+  "e_calculate_handoff_coefficients.R"
+  ))
+# ,
+#   "f_apply_handoff_coefficients.R",
+#   "g_separate_NW_CLP_data.R"
+# ))
 
 # Full targets list 
 c(a_locs_poly_setup,
