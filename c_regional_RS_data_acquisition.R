@@ -35,6 +35,23 @@ c_regional_RS_data <- list(
     }
   ),
   
+  tar_target(
+    name = c_check_Drive_regional,
+    command = {
+      config_check_drive_parent_folder
+      tryCatch({
+        drive_auth(c_yml$google_email)
+        drive_ls(paste(c_yml$proj_folder, c_yml$run_date, sep = "_v"))
+      }, error = function(e) {
+        # if the outpath doesn't exist, create it
+        drive_mkdir(name = paste(c_yml$proj_folder, c_yml$run_date, sep = "_v"),
+                    path = c_yml$drive_parent_folder)
+      })
+    },
+    packages = c("googledrive")
+  ),
+  
+  
   
   # set up ee run configuration -----------------------------------------------
   

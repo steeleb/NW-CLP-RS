@@ -47,6 +47,22 @@ b_site_RS_data <- list(
     }
   ),
   
+  tar_target(
+    name = b_check_Drive_NW_CLP,
+    command = {
+      config_check_drive_parent_folder
+      tryCatch({
+        drive_auth(b_yml$google_email)
+        drive_ls(paste(b_yml$proj_folder, b_yml$run_date, sep = "_v"))
+      }, error = function(e) {
+        # if the outpath doesn't exist, create it
+        drive_mkdir(name = paste(b_yml$proj_folder, b_yml$run_date, sep = "_v"),
+                    path = b_yml$drive_parent_folder)
+      })
+    },
+    packages = c("googledrive")
+  ),
+  
   
   # set up ee run configuration -----------------------------------------------
   
@@ -67,7 +83,8 @@ b_site_RS_data <- list(
       format_yaml(yaml = b_config_file,
                   parent_path = "b_site_RS_data_acquisition")
     },
-    packages = c("yaml", "tidyverse") #for some reason, you have to load TV.
+    packages = c("yaml", "tidyverse"),
+    cue = tar_cue("always")
   ),
   
   # load, format, save user locations as an updated csv called locs.csv
@@ -111,7 +128,7 @@ b_site_RS_data <- list(
     command = {
       b_yml
       b_locs_filtered
-      run_GEE_per_tile(WRS_pathrow = b_WRS_tiles,
+      run_GEE_per_tile(WRS_tile = b_WRS_tiles,
                        parent_path = "b_site_RS_data_acquisition")
     },
     pattern = b_WRS_tiles,

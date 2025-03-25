@@ -7,7 +7,7 @@ import os
 from pandas import read_csv
 
 
-# get locations and yml from data folder
+# get yml from data folder
 yml = read_csv('b_site_RS_data_acquisition/run/yml.csv')
 
 eeproj = yml['ee_proj'][0]
@@ -21,6 +21,7 @@ with open('b_site_RS_data_acquisition/run/current_tile.txt', 'r') as file:
 # get EE/Google settings from yml file
 proj = yml['proj'][0]
 proj_folder = yml['proj_folder'][0]
+run_date = yml['run_date'][0]
 
 # create folder with version number
 folder_version = proj_folder + "_v" + run_date
@@ -49,14 +50,38 @@ except AttributeError:
 extent = (yml['extent'][0]
   .split('+'))
 
+def csv_to_eeFeat(df, proj):
+  """Function to create an eeFeature from the location data
+
+  Args:
+      df: point locations .csv file with Latitude and Longitude
+      proj: CRS projection of the points
+
+  Returns:
+      ee.FeatureCollection of the points 
+  """
+  features=[]
+  # Calculate start and end indices for the current chunk
+  for i in range(len(df)):
+    try:
+      x,y = df.Longitude[i],df.Latitude[i]
+      latlong = [x,y]
+      loc_properties = {'system:index':str(df.id[i]), 'id':str(df.id[i])}
+      g = ee.Geometry.Point(latlong, proj) 
+      feature = ee.Feature(g, loc_properties)
+      features.append(feature)
+    except KeyError as e:
+      print(f"KeyError at index {i}, skipping to next iteration")
+      continue  # skip to the next iteration
+  return ee.FeatureCollection(features)
 
 if 'site' in extent:
   # create file name of location data
-  locs_fn = os.path.join("b_site_RS_data_acquisition/out/locations/", ("locations_" + tile + ".csv"))
+  locs_fn = os.path.join("b_site_RS_data_acquisition/out/locations/", ("locations_" + tiles + ".csv"))
   # read in locations file
   locations_subset = read_csv(locs_fn)
   # convert locations to an eeFeatureCollection
-  locs_feature = csv_to_eeFeat(locations, yml['location_crs'][0])
+  locs_feature = csv_to_eeFeat(locations_subset, yml['location_crs'][0])
 
 
 if 'polygon' in extent:
@@ -133,16 +158,12 @@ l4 = (ee.ImageCollection('LANDSAT/LT04/C02/T1_L2')
 ls457 = ee.ImageCollection(l4.merge(l5).merge(l7))
     
 # existing band names
-bn457 = (['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7', 
-  'QA_PIXEL', 'SR_CLOUD_QA', 'QA_RADSAT', 'ST_B6', 
-  'ST_QA', 'ST_CDIST', 'ST_ATRAN', 'ST_DRAD', 'ST_EMIS',
-  'ST_EMSD', 'ST_TRAD', 'ST_URAD'])
+bn457 = (["SR_B1", "SR_B2", "SR_B3", "SR_B4", "SR_B5", "SR_B7", 
+  "QA_PIXEL", "SR_ATMOS_OPACITY", "QA_RADSAT", "ST_B6"])
   
 # new band names
-bns457 = (['Blue', 'Green', 'Red', 'Nir', 'Swir1', 'Swir2', 
-  'pixel_qa', 'cloud_qa', 'radsat_qa', 'SurfaceTemp', 
-  'temp_qa', 'ST_CDIST', 'ST_ATRAN', 'ST_DRAD', 'ST_EMIS',
-  'ST_EMSD', 'ST_TRAD', 'ST_URAD'])
+bns457 = (["Blue", "Green", "Red", "Nir", "Swir1", "Swir2", 
+  "pixel_qa", "opacity_qa", "radsat_qa", "SurfaceTemp"])
   
 
 #grab image stacks
@@ -162,49 +183,18 @@ l9 = (ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
 ls89 = ee.ImageCollection(l8.merge(l9))
     
 # existing band names
-bn89 = (['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 
-  'QA_PIXEL', 'SR_QA_AEROSOL', 'QA_RADSAT', 'ST_B10', 
-  'ST_QA', 'ST_CDIST', 'ST_ATRAN', 'ST_DRAD', 'ST_EMIS',
-  'ST_EMSD', 'ST_TRAD', 'ST_URAD'])
+bn89 = (["SR_B1", "SR_B2", "SR_B3", "SR_B4", "SR_B5", "SR_B6", "SR_B7", 
+  "QA_PIXEL", "SR_QA_AEROSOL", "QA_RADSAT", "ST_B10"])
   
 # new band names
-bns89 = (['Aerosol','Blue', 'Green', 'Red', 'Nir', 'Swir1', 'Swir2',
-  'pixel_qa', 'aerosol_qa', 'radsat_qa', 'SurfaceTemp', 
-  'temp_qa', 'ST_CDIST', 'ST_ATRAN', 'ST_DRAD', 'ST_EMIS',
-  'ST_EMSD', 'ST_TRAD', 'ST_URAD'])
+bns89 = (["Aerosol", "Blue", "Green", "Red", "Nir", "Swir1", "Swir2",
+  "pixel_qa", "aerosol_qa", "radsat_qa", "SurfaceTemp"])
+ 
  
 #################################
 # LOAD ALL THE CUSTOM FUNCTIONS #
 #################################
 
-def csv_to_eeFeat(df, proj, chunk, chunk_size):
-  """Function to create an eeFeature from the location data
-
-  Args:
-      df: point locations .csv file with Latitude and Longitude
-      proj: CRS projection of the points
-      chunk: iteration through the dataframe (defined in process chunks)
-      chunk_size: number of sites in chunk
-
-  Returns:
-      ee.FeatureCollection of the points 
-  """
-  features=[]
-  # Calculate start and end indices for the current chunk
-  range_min = chunk_size * chunk
-  range_max = min(chunk_size * (chunk + 1), len(df)) + range_min
-  for i in range(range_min, range_max):
-    try:
-      x,y = df.Longitude[i],df.Latitude[i]
-      latlong =[x,y]
-      loc_properties = {'system:index':str(df.id[i]), 'id':str(df.id[i])}
-      g=ee.Geometry.Point(latlong, proj) 
-      feature = ee.Feature(g, loc_properties)
-      features.append(feature)
-    except KeyError as e:
-      print(f"KeyError at index {i}, skipping to next iteration")
-      continue  # skip to the next iteration
-  return ee.FeatureCollection(features)
 
 
 def apply_scale_factors(image):
@@ -1954,6 +1944,7 @@ def maximum_no_of_tasks(MaxNActive, waitingPeriod):
   return()
 
 
+
 ##########################################
 ##---- LANDSAT 457 ACQUISITION      ----##
 ##########################################
@@ -2004,7 +1995,7 @@ for e in extent:
     if '1a' in dswe:
       locs_out_457_D1 = locs_stack_ls457.map(lambda image: ref_pull_457_DSWE1(image, feat)).flatten()
       locs_out_457_D1 = locs_out_457_D1.filter(ee.Filter.notNull(['med_Blue']))
-      locs_srname_457_D1 = proj+'_site_LS457_C2_SRST_DSWE1_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+      locs_srname_457_D1 = proj + '_site_LS457_C2_SRST_DSWE1_' + str(tiles) + '_v' + run_date
       locs_dataOut_457_D1 = (ee.batch.Export.table.toDrive(collection = locs_out_457_D1,
                                               description = locs_srname_457_D1,
                                               folder = folder_version,
@@ -2026,10 +2017,10 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
       #Send next task.                                        
       locs_dataOut_457_D1.start()
-      print('Task sent: Landsat 4, 5, 7 DSWE 1 acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+      print('Task sent: Landsat 4, 5, 7 DSWE 1 acquisitions for site configuration at tile ' + str(tiles))
       locs_out_457_D1a = locs_stack_ls457.map(lambda image: ref_pull_457_DSWE1a(image, feat)).flatten()
       locs_out_457_D1a = locs_out_457_D1a.filter(ee.Filter.notNull(['med_Blue']))
-      locs_srname_457_D1a = proj+'_site_LS457_C2_SRST_DSWE1a_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+      locs_srname_457_D1a = proj + '_site_LS457_C2_SRST_DSWE1a_' + str(tiles) + '_v' + run_date
       locs_dataOut_457_D1a = (ee.batch.Export.table.toDrive(collection = locs_out_457_D1a,
                                               description = locs_srname_457_D1a,
                                               folder = folder_version,
@@ -2051,13 +2042,13 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
       #Send next task.                                        
       locs_dataOut_457_D1a.start()
-      print('Task sent: Landsat 4, 5, 7 DSWE 1a acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+      print('Task sent: Landsat 4, 5, 7 DSWE 1a acquisitions for site configuration at tile ' + str(tiles))
     
     else: 
       # only pull DSWE1
       locs_out_457_D1 = locs_stack_ls457.map(lambda image: ref_pull_457_DSWE1(image, feat)).flatten()
       locs_out_457_D1 = locs_out_457_D1.filter(ee.Filter.notNull(['med_Blue']))
-      locs_srname_457_D1 = proj+'_site_LS457_C2_SRST_DSWE1_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+      locs_srname_457_D1 = proj + '_site_LS457_C2_SRST_DSWE1_' + str(tiles) + '_v' + run_date
       locs_dataOut_457_D1 = (ee.batch.Export.table.toDrive(collection = locs_out_457_D1,
                                               description = locs_srname_457_D1,
                                               folder = folder_version,
@@ -2079,7 +2070,7 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
       #Send next task.                                        
       locs_dataOut_457_D1.start()
-      print('Task sent: Landsat 4, 5, 7 DSWE 1 acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+      print('Task sent: Landsat 4, 5, 7 DSWE 1 acquisitions for site configuration at tile ' + str(tiles))
     
   else: print('Not configured to acquire DSWE 1 or DSWE 1a stack for Landsat 4, 5, 7 for site configuration')
   
@@ -2088,7 +2079,7 @@ for e in extent:
     # pull DSWE3
     locs_out_457_D3 = locs_stack_ls457.map(lambda image: ref_pull_457_DSWE3(image, feat)).flatten()
     locs_out_457_D3 = locs_out_457_D3.filter(ee.Filter.notNull(['med_Blue']))
-    locs_srname_457_D3 = proj+'_site_LS457_C2_SRST_DSWE3_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+    locs_srname_457_D3 = proj + '_site_LS457_C2_SRST_DSWE3_' + str(tiles) + '_v' + run_date
     locs_dataOut_457_D3 = (ee.batch.Export.table.toDrive(collection = locs_out_457_D3,
                                             description = locs_srname_457_D3,
                                             folder = folder_version,
@@ -2110,7 +2101,7 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
     #Send next task.                                        
     locs_dataOut_457_D3.start()
-    print('Task sent: Landsat 4, 5, 7 DSWE 3 acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+    print('Task sent: Landsat 4, 5, 7 DSWE 3 acquisitions for site configuration at tile ' + str(tiles))
     
   else: print('Not configured to acquire DSWE 3 stack for Landsat 4, 5, 7 for site configuration')
 
@@ -2160,7 +2151,7 @@ for e in extent:
     if '1a' in dswe:
       locs_out_89_D1 = locs_stack_ls89.map(lambda image: ref_pull_89_DSWE1(image, feat)).flatten()
       locs_out_89_D1 = locs_out_89_D1.filter(ee.Filter.notNull(['med_Blue']))
-      locs_srname_89_D1 = proj+'_site_LS89_C2_SRST_DSWE1_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+      locs_srname_89_D1 = proj + '_site_LS89_C2_SRST_DSWE1_' + str(tiles) + '_v' + run_date
       locs_dataOut_89_D1 = (ee.batch.Export.table.toDrive(collection = locs_out_89_D1,
                                               description = locs_srname_89_D1,
                                               folder = folder_version,
@@ -2182,11 +2173,11 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
       #Send next task.                                        
       locs_dataOut_89_D1.start()
-      print('Task sent: Landsat 8, 9 DSWE 1  acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+      print('Task sent: Landsat 8, 9 DSWE 1  acquisitions for site configuration at tile ' + str(tiles))
       
       locs_out_89_D1a = locs_stack_ls89.map(lambda image: ref_pull_89_DSWE1a(image, feat)).flatten()
       locs_out_89_D1a = locs_out_89_D1a.filter(ee.Filter.notNull(['med_Blue']))
-      locs_srname_89_D1a = proj+'_site_LS89_C2_SRST_DSWE1a_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+      locs_srname_89_D1a = proj+'_site_LS89_C2_SRST_DSWE1a_' + str(tiles) + '_v' + run_date
       locs_dataOut_89_D1a = (ee.batch.Export.table.toDrive(collection = locs_out_89_D1a,
                                               description = locs_srname_89_D1a,
                                               folder = folder_version,
@@ -2208,12 +2199,12 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
       #Send next task.                                        
       locs_dataOut_89_D1a.start()
-      print('Task sent: Landsat 8, 9 DSWE 1a acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+      print('Task sent: Landsat 8, 9 DSWE 1a acquisitions for site configuration at tile ' + str(tiles))
       
     else:
       locs_out_89_D1 = locs_stack_ls89.map(lambda image: ref_pull_89_DSWE1(image, feat)).flatten()
       locs_out_89_D1 = locs_out_89_D1.filter(ee.Filter.notNull(['med_Blue']))
-      locs_srname_89_D1 = proj+'_site_LS89_C2_SRST_DSWE1_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+      locs_srname_89_D1 = proj + '_site_LS89_C2_SRST_DSWE1_' + str(tiles) + '_v' + run_date
       locs_dataOut_89_D1 = (ee.batch.Export.table.toDrive(collection = locs_out_89_D1,
                                               description = locs_srname_89_D1,
                                               folder = folder_version,
@@ -2235,14 +2226,14 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
       #Send next task.                                        
       locs_dataOut_89_D1.start()
-      print('Task sent: Landsat 8, 9 DSWE 1 acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+      print('Task sent: Landsat 8, 9 DSWE 1 acquisitions for site configuration at tile ' + str(tiles))
   
   else: print('Not configured to acquire DSWE 1 stack for Landsat 8, 9 for site configuration')
   
   if '3' in dswe:
     locs_out_89_D3 = locs_stack_ls89.map(lambda image: ref_pull_89_DSWE3(image, feat)).flatten()
     locs_out_89_D3 = locs_out_89_D3.filter(ee.Filter.notNull(['med_Blue']))
-    locs_srname_89_D3 = proj+'_site_LS89_C2_SRST_DSWE3_'+str(pr)+'_'+str(chunk)+'_v'+run_date
+    locs_srname_89_D3 = proj + '_site_LS89_C2_SRST_DSWE3_' + str(tiles) + '_v' + run_date
     locs_dataOut_89_D3 = (ee.batch.Export.table.toDrive(collection = locs_out_89_D3,
                                             description = locs_srname_89_D3,
                                             folder = folder_version,
@@ -2264,7 +2255,7 @@ for e in extent:
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
     #Send next task.                                        
     locs_dataOut_89_D3.start()
-    print('Task sent: Landsat 8, 9 DSWE 3 acquisitions for site configuration at tile ' + str(pr) + ' chunk ' + str(chunk + 1))
+    print('Task sent: Landsat 8, 9 DSWE 3 acquisitions for site configuration at tile ' + str(tiles))
   
   else: print('Not configured to acquire DSWE 3 stack for Landsat 8,9 for sites')
 
@@ -2276,10 +2267,10 @@ for e in extent:
 
 
 ## get metadata ##
-meta_srname_457 = proj+'_metadata_LS457_C2_'+str(tiles)+'_v'+run_date
+meta_srname_457 = proj + '_metadata_LS457_C2_' + str(tiles) + '_v' + run_date
 meta_dataOut_457 = (ee.batch.Export.table.toDrive(collection = ls457,
                                         description = meta_srname_457,
-                                        folder = proj_folder,
+                                        folder = folder_version,
                                         fileFormat = 'csv'))
 
 #Send next task.                                        
@@ -2291,15 +2282,15 @@ meta_dataOut_457.start()
 ##---- LANDSAT 89 METADATA ACQUISITION ----##
 #############################################
 
-
+## get metadata ##
+meta_srname_89 = proj + '_metadata_LS89_C2_' + str(tiles) + '_v' + run_date
 meta_dataOut_89 = (ee.batch.Export.table.toDrive(collection = ls89,
                                         description = meta_srname_89,
-                                        folder = proj_folder,
+                                        folder = folder_version,
                                         fileFormat = 'csv'))
 
 
 #Send next task.                                        
 meta_dataOut_89.start()
 
-print("Task sent: metadata acquisition for tile " +str(pr))
-
+print("Task sent: metadata acquisition for tile " + str(tiles))

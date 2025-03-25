@@ -11,13 +11,6 @@ tar_source("a_locs_poly_setup/src/")
 
 a_locs_poly_setup <- list(
   
-  # project config settings (you must use the `config::` style here)
-  tar_target(
-    name = a_config,
-    command = config::get(),
-    cue = tar_cue("always")
-  ),
-  
   # check for proper directory structure ------------------------------------
   
   tar_target(
@@ -42,7 +35,7 @@ a_locs_poly_setup <- list(
     command = {
       a_check_dir_structure
       get_polygons(HUC = "10190007", 
-                   minimum_sqkm = 0.01,
+                   minimum_sqkm = 0.01, 
                    ftypes = c(390, 436))
     },
     packages = c("sf", "nhdplusTools", "tidyverse", "janitor")
@@ -142,7 +135,7 @@ a_locs_poly_setup <- list(
   # in the lake and not specific to a sampling location
   tar_file_read(
     name = a_ROSS_CLP_file,
-    command = 'data/CLP/upper_poudre_lakes_v2.csv',
+    command = 'data/CLP/upper_poudre_lakes_v4.csv',
     read = read_csv(!!.x),
     packages = 'readr',
     cue = tar_cue("always")
@@ -162,18 +155,31 @@ a_locs_poly_setup <- list(
   # get polygons info from NW/CLP sf
   tar_target(
     name = a_ROSS_CLP_polygons,
-    command = a_NW_CLP_polygons[a_ROSS_CLP_points %>% st_transform(st_crs(a_NW_CLP_polygons)), ]
+    command = a_NW_CLP_polygons[a_ROSS_CLP_points %>% 
+                                  st_transform(st_crs(a_NW_CLP_polygons)) %>% 
+                                  st_buffer(250), ]
   ),
   
   
   # add ROSS_CLP label to data group ----------------------------------------
   
-  # since all the ROSS_CLP reservoirs are in NW_CLP centers and polygons files, 
-  # we'll just add ROSS_CLP label to data group and make a new polygon target
+  # Some of the ROSS CLP are stations with data, others are not. 
   tar_target(
     name = a_NW_CLP_ROSS_centers,
     command = {
       NHD_perm_ids = unique(a_ROSS_CLP_polygons$permanent_identifier)
+      a_NW_CLP_centers %>% 
+        mutate(data_group = if_else(permanent_identifier %in% NHD_perm_ids,
+                                    paste(data_group, "ROSS_CLP", sep = ", "),
+                                    data_group))
+    }
+  ),
+
+    # since all the ROSS_CLP reservoirs are in NW_CLP centers and polygons files, 
+  # we'll just add ROSS_CLP label to data group and make a new polygon target
+  tar_target(
+    name = a_NW_CLP_ROSS_sites,
+    command = {
       a_NW_CLP_centers %>% 
         mutate(data_group = if_else(permanent_identifier %in% NHD_perm_ids,
                                     paste(data_group, "ROSS_CLP", sep = ", "),

@@ -29,6 +29,28 @@ tar_option_set(
 
 # collate targets lists and files ----------------------------
 
+config_list <- list(
+  
+  # project config settings (you must use the `config::` style here)
+  tar_target(
+    name = general_config,
+    command = config::get(),
+    cue = tar_cue("always")
+  ),
+  
+  tar_target(
+    name = config_check_drive_parent_folder,
+    command = tryCatch({
+      drive_auth(general_config$google_email)
+      drive_ls(path = general_config$drive_parent_folder, type = "folder")
+    }, error = function(e) {
+      drive_mkdir(str_sub(general_config$drive_parent_folder, 1, -2))  
+    }),
+    packages = "googledrive",
+    cue = tar_cue("always")
+  )
+)
+
 # source functions
 tar_source(files = c(
   "a_locs_poly_setup.R",
@@ -36,14 +58,15 @@ tar_source(files = c(
   "c_regional_RS_data_acquisition.R",
   "d_baseline_QAQC.R",
   "e_calculate_handoff_coefficients.R"
-  ))
+))
 # ,
 #   "f_apply_handoff_coefficients.R",
 #   "g_separate_NW_CLP_data.R"
 # ))
 
 # Full targets list 
-c(a_locs_poly_setup,
+c(config_list,
+  a_locs_poly_setup,
   b_site_RS_data,
   c_regional_RS_data,
   d_baseline_QAQC,
