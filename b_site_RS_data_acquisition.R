@@ -135,8 +135,8 @@ b_site_RS_data <- list(
     packages = "reticulate",
     deployment = "main"
   ),
-
-    # wait for all earth engine tasks to be completed
+  
+  # wait for all earth engine tasks to be completed
   tar_target(
     name = b_ee_tasks_complete,
     command = {
@@ -150,17 +150,47 @@ b_site_RS_data <- list(
   
   # download and collate files ----------------------------------------------
   
+  tar_target(
+    name = b_NW_CLP_contents,
+    command = {
+      # assure tasks complete
+      b_ee_tasks_complete
+      drive_auth(email = b_yml$google_email)
+      drive_folder <- paste0(b_yml$drive_parent_folder, 
+                             b_yml$proj_folder, 
+                             "_v", b_yml$run_date)
+      drive_ls(path = drive_folder) %>% 
+        select(name, id)
+    },
+    packages = c("tidyverse", "googledrive")
+  ),
+  
+  
   # download all files
   tar_target(
     name = b_download_files,
-    command = {
-      b_ee_tasks_complete
-      download_csvs_from_drive(drive_folder_name = b_yml$proj_folder,
-                               google_email = b_yml$google_email,
-                               version_identifier = b_yml$run_date,
-                               parent_path = "b_site_RS_data_acquisition")
-    },
+    command = download_csvs_from_drive(local_folder = "b_site_RS_data_acquisition/down/",
+                                       yml = b_yml,
+                                       drive_contents = b_NW_CLP_contents),
     packages = c("tidyverse", "googledrive")
+  ),
+  
+  # detect dswe types
+  tar_target(
+    name = b_DSWE_types,
+    command = {
+      dswe = NULL
+      if (grepl("1", b_yml$DSWE_setting)) {
+        dswe = c(dswe, "DSWE1")
+      } 
+      if (grepl("1a", b_yml$DSWE_setting)) {
+        dswe = c(dswe, "DSWE1a")
+      } 
+      if (grepl("3", b_yml$DSWE_setting)) {
+        dswe = c(dswe, "DSWE3")
+      } 
+      dswe
+    }
   ),
   
   # collate all files
@@ -168,11 +198,13 @@ b_site_RS_data <- list(
     name = b_make_collated_data_files,
     command = {
       b_download_files
-      collate_csvs_from_drive(file_prefix = b_yml$proj, 
-                              version_identifier = b_yml$run_date,
-                              parent_path = "b_site_RS_data_acquisition")
+      collate_csvs_from_drive(local_folder = "b_site_RS_data_acquisition/down/",
+                              yaml = b_yml,
+                              out_folder = "b_site_RS_data_acquisition/mid/",
+                              dswe = b_DSWE_types)
     },
-    packages = c("tidyverse", "arrow")
+    pattern = map(b_DSWE_types),
+    packages = c("data.table", "tidyverse", "arrow")
   ),
   
   # and collate the data with metadata
@@ -181,7 +213,8 @@ b_site_RS_data <- list(
     command = {
       b_make_collated_data_files
       add_metadata(yaml = b_yml,
-                   parent_path = "b_site_RS_data_acquisition")
+                   local_folder = file.path("b_site_RS_data_acquisition/mid/", b_yml$run_date),
+                   out_folder = file.path("b_site_RS_data_acquisition/out", b_yml$run_date))
     },
     packages = c("tidyverse", "arrow")
   )

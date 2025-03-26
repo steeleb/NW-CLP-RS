@@ -135,7 +135,7 @@ a_locs_poly_setup <- list(
   # in the lake and not specific to a sampling location
   tar_file_read(
     name = a_ROSS_CLP_file,
-    command = 'data/CLP/upper_poudre_lakes_v4.csv',
+    command = 'data/CLP/upper_poudre_lakes_v5.csv',
     read = read_csv(!!.x),
     packages = 'readr',
     cue = tar_cue("always")
@@ -146,9 +146,26 @@ a_locs_poly_setup <- list(
     name = a_ROSS_CLP_points,
     command = st_as_sf(a_ROSS_CLP_file, 
                        crs = "EPSG:4326",
-                       coords = c("Longitude", "Latitude"))
+                       coords = c("Longitude", "Latitude")) 
   ),
   
+  # now collate the ROSS sites and the NW stations
+  tar_target(
+    name = a_NW_ROSS_stations,
+    command = {
+      ross_sites <- a_ROSS_CLP_file %>% 
+        filter(!is.na(site_code)) %>% 
+        select(Station = site_code, 
+               Description = Reservoir,
+               notes = Notes,
+               Longitude, Latitude)
+      ross_nhd <- load_points_add_NHD_info(points = ross_sites, 
+                               polygons = a_ROSS_CLP_polygons, 
+                               data_grp = "ROSS", 
+                               loc_type = "station") 
+      bind_rows(a_NW_station_points, ross_nhd)
+    },
+  ),
   
   # get associated polygons for ROSS CLP -------------------------------------
   
@@ -157,7 +174,8 @@ a_locs_poly_setup <- list(
     name = a_ROSS_CLP_polygons,
     command = a_NW_CLP_polygons[a_ROSS_CLP_points %>% 
                                   st_transform(st_crs(a_NW_CLP_polygons)) %>% 
-                                  st_buffer(250), ]
+                                  # add a little buffer so that near-shore are included
+                                  st_buffer(100), ]
   ),
   
   
@@ -174,8 +192,8 @@ a_locs_poly_setup <- list(
                                     data_group))
     }
   ),
-
-    # since all the ROSS_CLP reservoirs are in NW_CLP centers and polygons files, 
+  
+  # since all the ROSS_CLP reservoirs are in NW_CLP centers and polygons files, 
   # we'll just add ROSS_CLP label to data group and make a new polygon target
   tar_target(
     name = a_NW_CLP_ROSS_sites,
@@ -229,9 +247,12 @@ a_locs_poly_setup <- list(
   # in this case)
   tar_target(
     name = a_collated_points,
-    command = combine_and_simplify_sfs(sf_1 = a_NW_CLP_ROSS_centers, data_group_1 = NA_character_,
-                                       sf_2 = a_NW_station_points, data_group_2 = NA_character_,
-                                       filename = "CLP_NW_ROSS_points", simplify = FALSE)
+    command = {
+      combine_and_simplify_sfs(sf_1 = a_NW_CLP_ROSS_centers, data_group_1 = NA_character_,
+                               sf_2 = a_NW_ROSS_stations, data_group_2 = NA_character_,
+                               filename = "CLP_NW_ROSS_points", simplify = FALSE)
+      
+    }
   ),
   
   # and create a .csv of the file for use in the RS pull workflow

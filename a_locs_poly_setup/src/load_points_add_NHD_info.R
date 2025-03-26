@@ -21,15 +21,23 @@ load_points_add_NHD_info <- function(points, polygons, data_grp, loc_type) {
   pts_sf <- st_as_sf(points, 
                      crs = 'EPSG:4326', 
                      coords = c('Longitude', 'Latitude')) %>% 
-    mutate(data_group = data_grp,
-           location_type = loc_type)
+    mutate(location_type = loc_type)
   # get crs of polygons to transform points to
   poly_crs <- st_crs(polygons)
   pts_sf <- st_transform(pts_sf, poly_crs)
   # grab only the polygons that have points in them
-  select_poly <- polygons[pts_sf, ]
+  select_poly <- polygons[pts_sf %>% st_buffer(100), ]
   # and grab info
   pts_with_info <- st_join(pts_sf, select_poly)
+  if (is.null(pts_with_info$data_group)) {
+    pts_with_info <- pts_with_info %>% 
+      mutate(data_group = data_grp)
+  } else {
+    pts_with_info <- pts_with_info %>% 
+      mutate(data_group = if_else(is.na(data_group), 
+                                  data_grp, 
+                                  paste0(data_group, ", ", data_grp)))
+  }
   
   # and now add dist to shore
   # get coordinates to calculate UTM zone. This is an adaptation of code from
@@ -65,6 +73,6 @@ load_points_add_NHD_info <- function(points, polygons, data_grp, loc_type) {
   st_write(pts_with_info, file.path("a_locs_poly_setup/out/",
                                     paste0(data_grp,
                                            "_points_NHD_info.gpkg")), append = F)
-
+  
   pts_with_info
 }
