@@ -21,7 +21,7 @@ google_settings:
 - google_email: "therossyndicate@gmail.com"
 - proj_folder: "NW_CLP_Landsat" # this is the folder name where the GEE data will be save to Google Drive. If it doesn't exist, it will be created.
 - ee_proj: "ee-nasa-nw" # this is the ee project name you are running your pulls from
-- run_date: "2025-03-24"
+- run_date: "2025-03-31"
 - drive_parent_folder: "~/NW_CLP_Project/"
 
 # The following parameters are optional and have default values listed below. 
