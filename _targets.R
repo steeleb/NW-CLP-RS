@@ -47,7 +47,8 @@ config_list <- list(
       drive_mkdir(str_sub(general_config$drive_parent_folder, 1, -2))  
     }),
     packages = "googledrive",
-    cue = tar_cue("always")
+    cue = tar_cue("always"),
+    deployment = "main"
   )
 )
 
