@@ -81,6 +81,7 @@ c_regional_RS_data <- list(
   tar_target(
     name = c_locs,
     command = {
+      a_aoi_centers_to_csv
       c_check_dir_structure
       grab_locs(yaml = c_yml,
                 parent_path = "c_regional_RS_data_acquisition")

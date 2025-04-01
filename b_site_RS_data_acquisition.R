@@ -92,6 +92,7 @@ b_site_RS_data <- list(
   tar_target(
     name = b_locs,
     command = {
+      a_collated_pts_to_csv
       b_check_dir_structure
       grab_locs(yaml = b_yml,
                 parent_path = "b_site_RS_data_acquisition")

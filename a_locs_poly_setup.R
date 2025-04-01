@@ -240,9 +240,11 @@ a_locs_poly_setup <- list(
   tar_target(
     name = a_collated_points,
     command = {
+      # transform from NAD83 to WGS84
+      NW_ROSS_stations <- st_transform(a_NW_ROSS_stations, "EPSG:4326")
       # join the two sf objects
-      collated_sf <- bind_rows(a_NW_CLP_ROSS_centers, a_NW_ROSS_stations) 
-      st_write(collated_sf, paste0("a_locs_poly_setup/out/", CLP_NW_ROSS_points, ".gpkg"), append = F)
+      collated_sf <- bind_rows(a_NW_CLP_ROSS_centers, NW_ROSS_stations) 
+      st_write(collated_sf, paste0("a_locs_poly_setup/out/CLP_NW_ROSS_points.gpkg"), append = F)
       collated_sf
     }
   ),

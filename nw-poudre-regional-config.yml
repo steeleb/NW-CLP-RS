@@ -21,7 +21,7 @@ google_settings:
 - proj_folder: "LS_C2_RegionalPoints" # this is the folder name where the GEE data will be save to Google Drive. If it doesn't exist, it will be created.
 - ee_proj: "ee-nasa-nw" # this is the ee project name you are running your pulls from
 - google_email: "therossyndicate@gmail.com"
-- run_date: "2025-03-24"
+- run_date: "2025-04-01"
 - drive_parent_folder: "~/NW_CLP_Project/"
 
 # The following parameters are optional and have default values listed below. 
