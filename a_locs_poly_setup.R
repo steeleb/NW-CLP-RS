@@ -26,8 +26,9 @@ a_locs_poly_setup <- list(
     }
   ),
   
+  # COLLATE POLYGONS AND CALCULATE CENTERS ----------------------------------
   
-  # get CLP polygons --------------------------------------------------------
+  ## get CLP polygons --------------------------------------------------------
   
   # get the polygons for CLP watershed using HUC8
   tar_target(
@@ -41,9 +42,12 @@ a_locs_poly_setup <- list(
     packages = c("sf", "nhdplusTools", "tidyverse", "janitor")
   ),
   
-  # get the NW-specific reservoirs --------------------------------------------
+  ## NW-specific reservoirs --------------------------------------------
   
-  # track and load the csv with NW locs
+  # some NW reservoirs are slightly outside the CLP watershed
+  
+  # track and load the csv with NW reservoirs (these are general locations, 
+  # not sampling locations)
   tar_file_read(
     name = a_NW_locs_file,
     command = "data/spatialData/ReservoirLocations.csv",
@@ -83,7 +87,7 @@ a_locs_poly_setup <- list(
                                         points = a_NW_locs_file)
   ),
   
-  # combine NW/CLP polygons -------------------------------------------------
+  ## combine NW/CLP polygons -------------------------------------------------
   
   # here, we combine the NW and CLP polygons into a single file, condensing 
   # the metadata where needed 
@@ -98,9 +102,9 @@ a_locs_poly_setup <- list(
   ),
   
   
-  # calculate centers of the polygons ---------------------------------------
+  ## calculate centers of the polygons ---------------------------------------
   
-  # from the polygons, we're going to calculate the center point for each of them
+  # from the collated polygons, we're going to calculate the center point for each of them
   tar_target(
     name = a_NW_CLP_centers,
     command = get_POI_centers(polygons = a_NW_CLP_polygons,
@@ -109,7 +113,9 @@ a_locs_poly_setup <- list(
   ),
   
   
-  # load NW station locations --------------------------------------------------
+  # COLLATE STATION SAMPLE LOCATIONS -----------------------------------------
+  
+  ## NW station locations --------------------------------------------------
   
   # and now we'll read in the station location information for NW
   tar_file_read(
@@ -129,7 +135,7 @@ a_locs_poly_setup <- list(
   ),
   
   
-  # load ROSS CLP station locations --------------------------------------------------
+  ## ROSS CLP station locations --------------------------------------------------
   
   # let's also bring in the ROSS CLP subset of lakes, many of these are random points
   # in the lake and not specific to a sampling location
@@ -160,14 +166,14 @@ a_locs_poly_setup <- list(
                notes = Notes,
                Longitude, Latitude)
       ross_nhd <- load_points_add_NHD_info(points = ross_sites, 
-                               polygons = a_ROSS_CLP_polygons, 
-                               data_grp = "ROSS", 
-                               loc_type = "station") 
+                                           polygons = a_ROSS_CLP_polygons, 
+                                           data_grp = "ROSS", 
+                                           loc_type = "station") 
       bind_rows(a_NW_station_points, ross_nhd)
     },
   ),
   
-  # get associated polygons for ROSS CLP -------------------------------------
+  ## add ROSS CLP labels to centers and polygons file ------------------------
   
   # get polygons info from NW/CLP sf
   tar_target(
@@ -179,25 +185,11 @@ a_locs_poly_setup <- list(
   ),
   
   
-  # add ROSS_CLP label to data group ----------------------------------------
-  
-  # Some of the ROSS CLP are stations with data, others are not. 
+  # Add data group label for ROSS waterbodies of interest to centers file
   tar_target(
     name = a_NW_CLP_ROSS_centers,
     command = {
       NHD_perm_ids = unique(a_ROSS_CLP_polygons$permanent_identifier)
-      a_NW_CLP_centers %>% 
-        mutate(data_group = if_else(permanent_identifier %in% NHD_perm_ids,
-                                    paste(data_group, "ROSS_CLP", sep = ", "),
-                                    data_group))
-    }
-  ),
-  
-  # since all the ROSS_CLP reservoirs are in NW_CLP centers and polygons files, 
-  # we'll just add ROSS_CLP label to data group and make a new polygon target
-  tar_target(
-    name = a_NW_CLP_ROSS_sites,
-    command = {
       a_NW_CLP_centers %>% 
         mutate(data_group = if_else(permanent_identifier %in% NHD_perm_ids,
                                     paste(data_group, "ROSS_CLP", sep = ", "),
@@ -218,7 +210,7 @@ a_locs_poly_setup <- list(
   ),
   
   
-  # pull out the ROSS_CLP centers -------------------------------------------
+  ## pull out the ROSS_CLP centers -------------------------------------------
   
   # and then we'll make the ROSS_CLP centers as a .csv
   tar_target(
@@ -240,7 +232,7 @@ a_locs_poly_setup <- list(
   ),
   
   
-  # prep for RS pull --------------------------------------------------------
+  ## prep for RS pull --------------------------------------------------------
   
   # we want the centers and the station locations to be in a single data set for 
   # use in the Landsat pull, and want to retain the metadata (aka, data group 
@@ -248,10 +240,10 @@ a_locs_poly_setup <- list(
   tar_target(
     name = a_collated_points,
     command = {
-      combine_and_simplify_sfs(sf_1 = a_NW_CLP_ROSS_centers, data_group_1 = NA_character_,
-                               sf_2 = a_NW_ROSS_stations, data_group_2 = NA_character_,
-                               filename = "CLP_NW_ROSS_points", simplify = FALSE)
-      
+      # join the two sf objects
+      collated_sf <- bind_rows(a_NW_CLP_ROSS_centers, a_NW_ROSS_stations) 
+      st_write(collated_sf, paste0("a_locs_poly_setup/out/", CLP_NW_ROSS_points, ".gpkg"), append = F)
+      collated_sf
     }
   ),
   
@@ -262,7 +254,7 @@ a_locs_poly_setup <- list(
                             filename = "NW_CLP_all_points")
   ),
   
-  # get EcoRegion L3 polygons ------------------------------------------------
+  # ECOREGION POLYGONS AND CENTERS ------------------------------------------
   
   # we're going to pull ER L3 lake centers to create a localized handoff 
   # coefficient. This is, in part, a side quest to see how the hand off
