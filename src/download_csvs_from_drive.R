@@ -26,14 +26,14 @@ download_csvs_from_drive <- function(local_folder,
                                      yml, 
                                      drive_contents, 
                                      depends = NULL) {
-
+  
   if (!is.null(file_type)) {
     if (!file_type %in% c("LS457", "LS89", "metadata", "pekel")) {
       warning("The file type argument provided is not recognized.\n
               This may result in unintended downloads.")
     }
   }
-
+  
   # authorize Google
   drive_auth(email = yml$google_email)
   # make sure they are only .csv files
@@ -50,8 +50,8 @@ download_csvs_from_drive <- function(local_folder,
     }
   }
   # make sure run date folder has been created
-  if (!dir.exists(file.path(local_folder, yml$run_date))) {
-    directory <- file.path(local_folder, yml$run_date)
+  directory <- file.path(local_folder, yml$run_date)
+  if (!dir.exists(directory)) {
     dir.create(directory)
   }
   if (!is.null(file_type)) {
