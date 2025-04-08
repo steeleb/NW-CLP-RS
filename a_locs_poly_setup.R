@@ -48,6 +48,8 @@ a_locs_poly_setup <- list(
   
   # track and load the csv with NW reservoirs (these are general locations, 
   # not sampling locations)
+  
+  # track and load the csv with NW locs
   tar_file_read(
     name = a_NW_locs_file,
     command = "data/spatialData/ReservoirLocations.csv",
