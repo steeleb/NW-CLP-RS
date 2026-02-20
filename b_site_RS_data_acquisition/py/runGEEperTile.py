@@ -85,7 +85,7 @@ if 'site' in extent:
 
 
 if 'polygon' in extent:
-  #if polygon is in extent, check for shapefile
+  # if polygon is in extent, check for shapefile
   shapefile = yml['polygon'][0]
   # if shapefile provided by user 
   if shapefile == True:
@@ -94,7 +94,7 @@ if 'polygon' in extent:
       shapes = ([ee.Geometry.Polygon(
         [[x[0], x[1]] for x in feature['geometry']['coordinates'][0]]
         ) for feature in src])
-  else: #otherwise use the NHDPlus file
+  else: # otherwise use the NHDPlus file
     # load the shapefile into a Fiona object
     with fiona.open('b_site_RS_data_acquisition/run/NHDPlus_polygon.shp') as src:
       shapes = ([ee.Geometry.Polygon(
@@ -114,7 +114,7 @@ if 'polycenter' in extent:
       'r_id': 'id'}))
     # load the shapefile into a Fiona object
     centers = csv_to_eeFeat(centers_csv, 'EPSG:4326')
-  else: #otherwise use the NHDPlus file
+  else: # otherwise use the NHDPlus file
     centers_csv = read_csv('b_site_RS_data_acquisition/run/NHDPlus_polygon_centers.csv')
     centers_csv = (centers_csv.rename(columns={'poi_latitude': 'Latitude', 
       'poi_longitude': 'Longitude',
@@ -136,7 +136,7 @@ wrs = (ee.FeatureCollection('projects/ee-ls-c2-srst/assets/WRS2_descending')
 wrs_path = int(tiles[:3])
 wrs_row = int(tiles[-3:])
 
-#grab images and apply scaling factors
+# grab images and apply scaling factors
 l7 = (ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
     .filter(ee.Filter.lt('CLOUD_COVER', ee.Number.parse(str(cloud_thresh))))
     .filterDate(yml_start, yml_end)
@@ -166,7 +166,7 @@ bns457 = (["Blue", "Green", "Red", "Nir", "Swir1", "Swir2",
   "pixel_qa", "opacity_qa", "radsat_qa", "SurfaceTemp"])
   
 
-#grab image stacks
+# grab image stacks
 l8 = (ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
     .filter(ee.Filter.lt('CLOUD_COVER', ee.Number.parse(str(cloud_thresh))))
     .filterDate(yml_start, yml_end)
@@ -235,7 +235,7 @@ def apply_rad_mask(image):
       ee.Image with additional band called 'radsat', where pixels with a value 
       of 0 are saturated for at least one SR band and a value of 1 is not saturated
   """
-  #grab the radsat band
+  # grab the radsat band
   satQA = image.select('radsat_qa')
   # all must be non-saturated per pixel
   satMask = satQA.eq(0)
@@ -2015,7 +2015,7 @@ for e in extent:
                                               'pCount_swir1_glint', 'pCount_swir2_glint', 
                                               'pCount_nir_ir_glint', 'pCount_swir1_ir_glint', 'pCount_swir2_ir_glint',
                                               'prop_clouds','prop_hillShadow','mean_hillShade']))
-      #Send next task.                                        
+      # Send next task.                                        
       locs_dataOut_457_D1.start()
       print('Task sent: Landsat 4, 5, 7 DSWE 1 acquisitions for site configuration at tile ' + str(tiles))
       locs_out_457_D1a = locs_stack_ls457.map(lambda image: ref_pull_457_DSWE1a(image, feat)).flatten()
