@@ -10,7 +10,7 @@ from pandas import read_csv
 yml = read_csv('c_regional_RS_data_acquisition/run/yml.csv')
 
 eeproj = yml['ee_proj'][0]
-#initialize GEE
+# initialize GEE
 ee.Initialize(project = eeproj)
 
 # get current tile
@@ -84,7 +84,7 @@ if 'site' in extent:
 
 
 if 'polygon' in extent:
-  #if polygon is in extent, check for shapefile
+  # if polygon is in extent, check for shapefile
   shapefile = yml['polygon'][0]
   # if shapefile provided by user 
   if shapefile == True:
@@ -93,7 +93,7 @@ if 'polygon' in extent:
       shapes = ([ee.Geometry.Polygon(
         [[x[0], x[1]] for x in feature['geometry']['coordinates'][0]]
         ) for feature in src])
-  else: #otherwise use the NHDPlus file
+  else: # otherwise use the NHDPlus file
     # load the shapefile into a Fiona object
     with fiona.open('c_regional_RS_data_acquisition/run/NHDPlus_polygon.shp') as src:
       shapes = ([ee.Geometry.Polygon(
@@ -113,7 +113,7 @@ if 'polycenter' in extent:
       'r_id': 'id'}))
     # load the shapefile into a Fiona object
     centers = csv_to_eeFeat(centers_csv, 'EPSG:4326')
-  else: #otherwise use the NHDPlus file
+  else: # otherwise use the NHDPlus file
     centers_csv = read_csv('c_regional_RS_data_acquisition/run/NHDPlus_polygon_centers.csv')
     centers_csv = (centers_csv.rename(columns={'poi_latitude': 'Latitude', 
       'poi_longitude': 'Longitude',
@@ -672,7 +672,7 @@ def calc_hill_shadows(image, geo):
 
 
 def remove_geo(image):
-  """ Funciton to remove the geometry from an ee.Image
+  """ Function to remove the geometry from an ee.Image
   
   Args:
       image: ee.Image of an ee.ImageCollection
