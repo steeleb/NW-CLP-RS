@@ -23,6 +23,9 @@ compare_masks/*
 # python venv folder
 env/*
 
+# python cache folders
+**/__pycache__/
+
 ## OneDrive Symlink
 data/
 
