@@ -1,0 +1,431 @@
+---
+title: "SCRATCH - NW/CLP, every siteSR row, with siteSR QA as flags"
+author: "B Steele, Colorado State University, ROSSyndicate"
+date: "last updated Oct 15, 2026"
+output:
+  html_document:
+    fig_retina: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# all paths below are relative to the NW-CLP-RS repository root
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_rstudio_project))
+```
+
+> **SCRATCH.** A stripped-down copy of `NW_CLP_regional_application.Rmd` that applies the production ensemble to every site and scene in this repository's NW/CLP RS pull, and plots the estimates for 2016–2024 at five CLP reservoirs (Barnes Meadow, Peterson, Chambers, Joe Wright, Long Draw). There is no Secchi matching or evaluation; the production notebook scores the strict-QA estimates against the NW Secchi record.
+>
+> **Every siteSR row is passed through the model.** The siteSR QA is not used as a filter here. Each QA step is carried as a flag instead, at both the strict thresholds the production notebook and the regional training data use and the relaxed thresholds set in `regional_SDD_application/siteSR_qa_flags.R` (shared with the band-only relaxed-QA notebook), alongside the values the flags are computed from. The model's applicability checks are flagged in the same way. The end user can then decide which estimates to include. These are exported, with a data dictionary, to `data/remoteSensing/IMW_regional_model_application/relaxed_qa/`.
+>
+> The AquaMatch downloads, model files, and strict band RANSAC flags are read from the production notebook's caches in `OUT_DIR` (run that notebook first). The site characteristics and weather come from the same caches, which the production notebook builds only for the sites and dates of its strict-QA scenes. This notebook fetches the rest (every site and date in the RS file) and adds them to those caches, so every row has the same inputs.
+
+## Setup
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(AquaMatchr)
+library(arrow)
+library(tidyverse)
+library(sf)
+library(elevatr)
+library(nhdplusTools)
+library(StreamCatTools)
+library(parallel)
+library(climateR)
+library(data.table)
+library(xgboost)
+library(jsonlite)
+library(RANN)
+
+log <- function(...) cat(sprintf("[%s] ", format(Sys.time(), "%H:%M:%S")), sprintf(...), "\n")
+
+NW_RS_PATH <- "b_site_RS_data_acquisition/out/2025-04-01/NW_Poudre_Historical_collated_DSWE1_site_meta_v2025-04-01.feather"
+
+# production notebook's caches - read only
+OUT_DIR <- "data/remoteSensing/IMW_regional_model_application"
+AQUAMATCH_DIR <- file.path(OUT_DIR, "aquamatch_downloads")
+# production model files, from the production notebook's download cache
+# (same source and pin, set in regional_model_source.R)
+source("regional_SDD_application/regional_model_source.R")
+model_file <- function(rel_path) cached_model_file(rel_path, "production")
+
+# this notebook's results and the relaxed band RANSAC cache (shared with the
+# band-only relaxed-QA notebook)
+RESULTS_DIR <- file.path(OUT_DIR, "relaxed_qa")
+dir.create(RESULTS_DIR, showWarnings = FALSE, recursive = TRUE)
+# set to TRUE to re-run the relaxed band RANSAC (e.g. after changing the
+# relaxed thresholds or the RS input file)
+FORCE_REFRESH_CACHE <- FALSE
+
+ENSEMBLE_SEEDS <- 601:610
+N_FOLDS <- 4
+
+# reservoirs shown in the plots (every site is predicted and exported)
+CLP_FOCUS_PATTERN <- "Barnes|Peterson|Chambers|Joe Wright|Long Draw"
+PLOT_START <- ymd("2016-01-01")
+PLOT_END <- ymd("2025-01-01")
+
+# siteSR QA as flags: thresholds (strict and relaxed) and functions, shared
+# with the band-only relaxed-QA notebook so both flag rows identically
+source("regional_SDD_application/siteSR_qa_flags.R")
+
+# training-time shore_flag distance (site buffer + one optical pixel), as in
+# the production notebook
+SHORE_DIST_M <- 200 + 30
+N_WORKERS <- 8 # parallel gridMET requests
+
+ROSS_LT_PAL <- c("#002EA3", "#E70870", "#256BF5", "#745CFB", "#1E4D2B", "#56104E", "#888888")
+```
+
+## Read the RS data and flag the siteSR QA
+
+Every row in the RS file, at every site and in every year. Each QA step is computed as its own flag, not cumulatively, so a row's flags show every step it fails:
+
+- **Pixel QA** (`qa_pixel_strict`, `qa_pixel_relaxed`): `dswe1_share` (`pCount_dswe1 / pCount_dswe_gt0`) above `r STRICT_DSWE1_SHARE_MIN` / `r DSWE1_SHARE_MIN`, `pCount_dswe1` above `r STRICT_DSWE1_COUNT_MIN` / `r DSWE1_COUNT_MIN`, and `prop_clouds` at most `r STRICT_PROP_CLOUDS_MAX` / `r PROP_CLOUDS_MAX` (strict / relaxed).
+- **Surface temperature** (`qa_temp`, the same at both levels): median surface temperature between 0 and 40 °C.
+- **Scene cloud cover** (`qa_scene_cloud_strict`, `qa_scene_cloud_relaxed`): AquaMatch scene-level `CLOUD_COVER` below `r STRICT_CLOUD_COVER_MAX`% / `r CLOUD_COVER_MAX`%. A scene missing from the metadata fails the strict check and `r if (KEEP_SCENES_WITHOUT_METADATA) "passes" else "fails"` the relaxed one.
+
+A value that can't be computed (for example, a missing surface temperature) fails its check. Band RANSAC follows the band harmonization below.
+
+```{r read-flag}
+NW_RS <- read_and_flag_siteSR(NW_RS_PATH, AQUAMATCH_DIR)
+```
+
+## Cross-sensor band harmonization
+
+All rows, with the AquaMatch handoffs, as in the production notebook. `apply_handoffs()` only works file-to-file, so it reads and writes temp files that are deleted afterward.
+
+```{r band-correction}
+NW_RS_corr <- harmonize_bands(NW_RS, file.path(AQUAMATCH_DIR, "lakeSR_handoff_coefficients.csv"))
+```
+
+## Band RANSAC
+
+Band RANSAC is a per-site filter, so its outcome depends on which scenes it is run over. It is evaluated twice, each time on the scenes that pass the earlier QA steps at that level:
+
+- **Strict** (`band_inlier_strict`): the production notebook's cached RANSAC flags, which were run on the scenes that pass the strict pixel, temperature, and scene checks. A row that passes those checks therefore gets exactly the production notebook's RANSAC result.
+- **Relaxed** (`band_inlier_relaxed`): the same function, identical to the production notebook (and `01_filter_AquaMatch_Data.Rmd`), run on the scenes that pass the relaxed checks. The flags are cached to `RESULTS_DIR` (and reused by the band-only relaxed-QA notebook); set `FORCE_REFRESH_CACHE <- TRUE` to re-run them.
+
+`TRUE` is an inlier and `FALSE` an outlier. `NA` means the row wasn't evaluated at that level, either because it failed an earlier step or because its site had 10 or fewer scenes to fit. Sites that RANSAC can't evaluate pass, as in `01`, so `qa_ransac_*` is `TRUE` for those.
+
+```{r band-ransac}
+NW_RS_corr <- add_ransac_flags(NW_RS_corr,
+                               production_ransac_cache = file.path(OUT_DIR, "NW_CLP_band_ransac_flags.feather"),
+                               relaxed_ransac_cache = file.path(RESULTS_DIR, "NW_CLP_relaxedQA_band_ransac_flags.feather"),
+                               force_refresh = FORCE_REFRESH_CACHE)
+```
+
+The QA cascade at each level, counting rows (scene–site pairs) and sites that pass every step so far:
+
+```{r qa-cascade}
+qa_log <- qa_cascade_log(NW_RS_corr)
+qa_log
+```
+
+## Add missing site characteristics and weather to the caches
+
+The production notebook fetches site characteristics (elevation, the NHDPlusV2 waterbody match and `shore_flag`, LakeCat catchment metrics) for the sites that pass the strict pixel QA, and gridMET weather for each site from 35 days before its first strict-QA scene to its last. Here, every site and date in the RS file is checked against those caches. The missing sites, and the missing date ranges before and after each site's cached weather, are fetched with the same code (`regional_SDD_application/site_inputs.R`) and appended. The weather summaries are recomputed for each site that gained days, over its whole record. A re-run fetches only what is still missing, such as a gridMET request that failed.
+
+Adding to the caches doesn't change the production notebook's results, which join the inputs to its own scenes only.
+
+```{r fill-site-inputs, message=FALSE, warning=FALSE}
+source("regional_SDD_application/site_inputs.R")
+site_char_cache <- file.path(OUT_DIR, "NW_CLP_site_characteristics.feather")
+weather_raw_cache <- file.path(OUT_DIR, "NW_CLP_weather_raw.feather")
+weather_summary_cache <- file.path(OUT_DIR, "NW_CLP_weather_summaries.feather")
+
+all_sites <- NW_RS %>% distinct(r_id, lat, lon)
+stopifnot("a site has more than one location" = !anyDuplicated(all_sites$r_id))
+
+# site characteristics for sites not yet in the cache
+site_chars <- read_feather(site_char_cache)
+missing_sites <- all_sites %>% filter(!r_id %in% site_chars$r_id)
+log("sites missing from the site-characteristics cache: %s / %s", nrow(missing_sites), nrow(all_sites))
+if (nrow(missing_sites) > 0) {
+  new_chars <- fetch_site_characteristics(missing_sites, SHORE_DIST_M)
+  write_cache(bind_rows(site_chars, new_chars), site_char_cache)
+  log("added %s sites to %s", nrow(new_chars), site_char_cache)
+}
+
+# weather: each site's cached record is one contiguous date range, so what is
+# missing is the whole range for a new site, or the stretch before and/or
+# after the cached range
+weather_raw <- read_feather(weather_raw_cache) %>% mutate(date = as.Date(date))
+cached_range <- weather_raw %>% summarise(cached_min = min(date), cached_max = max(date), .by = r_id)
+needed_range <- NW_RS %>%
+  summarise(need_min = min(date) - (WEATHER_MAX_WINDOW_DAYS + 5), need_max = max(date), .by = c(r_id, lat, lon)) %>%
+  left_join(cached_range, by = "r_id")
+weather_gaps <- bind_rows(
+  needed_range %>% filter(is.na(cached_min)) %>%
+    transmute(r_id, lat, lon, min_date = need_min, max_date = need_max),
+  needed_range %>% filter(!is.na(cached_min), need_min < cached_min) %>%
+    transmute(r_id, lat, lon, min_date = need_min, max_date = cached_min - 1),
+  needed_range %>% filter(!is.na(cached_max), need_max > cached_max) %>%
+    transmute(r_id, lat, lon, min_date = cached_max + 1, max_date = need_max)
+)
+log("weather ranges to fetch: %s at %s sites (%s site-days)",
+    nrow(weather_gaps), n_distinct(weather_gaps$r_id), sum(as.numeric(weather_gaps$max_date - weather_gaps$min_date) + 1))
+
+if (nrow(weather_gaps) > 0) {
+  gridmet <- fetch_gridmet(weather_gaps, n_workers = N_WORKERS)
+  if (nrow(gridmet$failed) > 0) {
+    write_csv(gridmet$failed, file.path(RESULTS_DIR, "NW_CLP_relaxedQA_weather_fetch_failures.csv"))
+  }
+  # keep only days not already cached, in the cache's columns
+  new_weather <- gridmet$weather %>%
+    mutate(date = as.Date(date)) %>%
+    select(all_of(names(weather_raw))) %>%
+    anti_join(weather_raw, by = c("r_id", "date"))
+  if (nrow(new_weather) > 0) {
+    weather_raw <- bind_rows(weather_raw, new_weather) %>% arrange(r_id, date)
+    write_cache(weather_raw, weather_raw_cache)
+
+    updated_sites <- unique(new_weather$r_id)
+    new_summaries <- summarize_weather(weather_raw %>% filter(r_id %in% updated_sites))
+    # keep every cached summary row whose windows were already complete, and
+    # add only the rest: rows for new dates, and rows near the start of a
+    # site's old record whose windows now have the earlier days they lacked.
+    # frollsum()'s running sum depends on where a site's record starts, so
+    # recomputing a complete row can change it in the last bits (e.g. a
+    # rainless week summing to -1e-15 instead of 0) - enough to flip the
+    # training-range check and change the production notebook's results.
+    weather_summaries_all <- read_feather(weather_summary_cache)
+    summary_cols <- setdiff(names(weather_summaries_all), c("r_id", "date"))
+    keep_cached <- weather_summaries_all %>%
+      filter(complete.cases(pick(all_of(summary_cols))) | !r_id %in% updated_sites)
+    new_rows <- as.data.frame(new_summaries) %>% anti_join(keep_cached, by = c("r_id", "date"))
+    write_cache(bind_rows(keep_cached, new_rows) %>% arrange(r_id, date), weather_summary_cache)
+    log("added %s days at %s sites to the weather caches", nrow(new_weather), length(updated_sites))
+    rm(weather_summaries_all, new_summaries)
+  }
+}
+rm(weather_raw)
+```
+
+## Model inputs
+
+Spectral indices, then the site characteristics and weather summaries from the (now filled) caches, then the same coarsening of the site features.
+
+```{r assemble}
+NW_RS_ml <- add_spectral_indices(NW_RS_corr)
+
+sites_unique <- read_feather(file.path(OUT_DIR, "NW_CLP_site_characteristics.feather"))
+focus_sites <- unique(NW_RS_ml$r_id)
+weather_summaries <- open_dataset(file.path(OUT_DIR, "NW_CLP_weather_summaries.feather"), format = "feather") %>%
+  filter(r_id %in% focus_sites) %>%
+  collect()
+log("sites missing from the site-characteristics cache: %s / %s",
+    length(setdiff(focus_sites, sites_unique$r_id)), length(focus_sites))
+
+CATCHMENT_WINSORIZE_CAP_SQKM <- 617.1
+
+model_input <- NW_RS_ml %>%
+  left_join(sites_unique %>% select(-lat, -lon, -comid), by = "r_id") %>%
+  left_join(weather_summaries, by = c("r_id", "date")) %>%
+  as.data.frame() %>%
+  mutate(catchment_area_sqkm = if_else(catchment_area_sqkm > 0,
+                                       10^round(log10(pmin(catchment_area_sqkm, CATCHMENT_WINSORIZE_CAP_SQKM)), 1),
+                                       catchment_area_sqkm),
+         across(c(pct_impervious_2006, pct_urban_2006, pct_forest_2006,
+                  pct_cropland_2006, pct_wetland_2006), ~ round(.x, 0)))
+
+# how much of the record the production caches cover, by QA level
+model_input %>%
+  mutate(qa_level = case_when(pass_qa_strict ~ "passes strict QA",
+                              pass_qa_relaxed ~ "passes relaxed QA only",
+                              .default = "fails relaxed QA")) %>%
+  summarise(n_rows = n(),
+            missing_site_characteristics = sum(is.na(pct_impervious_2006)),
+            missing_weather = sum(is.na(precip_mm_prev30)),
+            .by = qa_level)
+```
+
+## Predict
+
+Every row is predicted. The spread of the `r length(ENSEMBLE_SEEDS)` seed means (`pred_seed_sd`) measures how much the ensemble members disagree; it is not a prediction interval.
+
+```{r predict}
+seed_preds <- map(ENSEMBLE_SEEDS, \(seed) {
+  seed_dir <- paste0("seed", seed)
+  feats <- seed_features(seed, fetch = cached_model_file)
+  X <- as.matrix(model_input[, feats])
+  map(seq_len(N_FOLDS), \(fold) {
+    predict(xgb.load(model_file(file.path(seed_dir, paste0("xgboost_fold", fold, ".json")))), X)
+  }) %>%
+    reduce(`+`) / N_FOLDS
+}) %>%
+  do.call(cbind, .)
+model_input$pred_sdd <- rowMeans(seed_preds)
+model_input$pred_seed_sd <- apply(seed_preds, 1, sd)
+summary(model_input$pred_sdd)
+```
+
+## Applicability checks
+
+Same checks as the production notebook, applied to every row and flagged but not filtered. They are cumulative among themselves (each `pass_*` is `TRUE` only if the row also passes every earlier check), but independent of the siteSR QA flags. `di` is reported for every row with all AOA inputs present, and `out_of_range` names the inputs outside their training range, so the end user can see how far outside the training data a row is.
+
+```{r applicability}
+aoa_params <- fromJSON(model_file("applicability/aoa_parameters.json"))
+aoa_reference <- read_csv(model_file("applicability/aoa_reference.csv"), show_col_types = FALSE)
+training_region <- read_training_region(fetch = cached_model_file)
+feature_ranges <- aoa_params$feature_ranges
+aoa_features <- aoa_params$aoa_features
+season_window <- aoa_params$season_window_doy
+
+in_range <- function(df) {
+  ok <- rep(TRUE, nrow(df))
+  for (i in seq_len(nrow(feature_ranges))) {
+    x <- df[[feature_ranges$feature[i]]]
+    ok <- ok & !is.na(x) & x >= feature_ranges$min[i] & x <= feature_ranges$max[i]
+  }
+  ok
+}
+
+reference_X <- as.matrix(aoa_reference[, aoa_features$feature])
+compute_di <- function(df) {
+  X <- as.matrix(df[, aoa_features$feature])
+  X <- sweep(sweep(X, 2, aoa_features$center), 2, aoa_features$scale, "/")
+  X <- sweep(X, 2, aoa_features$weight, "*")
+  di <- rep(NA_real_, nrow(df))
+  ok <- complete.cases(X)
+  di[ok] <- nn2(reference_X, X[ok, , drop = FALSE], k = 1)$nn.dists[, 1] / aoa_params$d_bar
+  di
+}
+
+model_input <- model_input %>%
+  mutate(pass_region = in_region(lon, lat, training_region),
+         pass_mission = pass_region & mission %in% aoa_params$training_missions,
+         pass_season = pass_mission & between(yday(date), season_window[1], season_window[2]),
+         pass_complete = pass_season & complete.cases(model_input[, feature_ranges$feature]),
+         pass_range = pass_complete & in_range(.),
+         out_of_range = out_of_range(., feature_ranges),
+         di = compute_di(.),
+         pass_aoa = pass_range & !is.na(di) & di <= aoa_params$aoa_threshold,
+         pass_plausible = pass_aoa & pred_sdd >= aoa_params$min_training_sdd_m)
+
+# rows passing every applicability check, by QA level
+model_input %>%
+  summarise(n_rows = n(),
+            n_pass_qa_strict = sum(pass_qa_strict),
+            n_pass_qa_relaxed = sum(pass_qa_relaxed),
+            n_pass_checks = sum(pass_plausible),
+            n_pass_qa_strict_and_checks = sum(pass_qa_strict & pass_plausible),
+            n_pass_qa_relaxed_and_checks = sum(pass_qa_relaxed & pass_plausible))
+```
+
+## Plot
+
+Predicted SDD for every scene at the five CLP reservoirs, 2016–2024, colored by the strictest QA level the scene passes. The second plot shows only the scenes that pass the relaxed QA, colored by whether they pass every applicability check.
+
+```{r plot, fig.width=10, fig.height=6}
+qa_level_pal <- c(`passes strict QA` = ROSS_LT_PAL[1], `passes relaxed QA only` = ROSS_LT_PAL[3],
+                  `fails relaxed QA` = ROSS_LT_PAL[7])
+ross_data <- model_input %>%
+  filter(str_detect(gnis_name, CLP_FOCUS_PATTERN), between(date, PLOT_START, PLOT_END)) %>%
+  mutate(qa_level = factor(case_when(pass_qa_strict ~ "passes strict QA",
+                                     pass_qa_relaxed ~ "passes relaxed QA only",
+                                     .default = "fails relaxed QA"),
+                           levels = names(qa_level_pal)))
+
+ggplot(ross_data %>% arrange(desc(qa_level)), aes(x = date, y = pred_sdd, color = qa_level)) +
+  geom_point(alpha = 0.6) +
+  facet_wrap(gnis_name ~ .) +
+  scale_color_manual(values = qa_level_pal) +
+  labs(x = NULL, y = "predicted Secchi depth (m)", color = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggplot(ross_data %>% filter(pass_qa_relaxed),
+       aes(x = date, y = pred_sdd, color = pass_plausible)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(gnis_name ~ .) +
+  scale_color_manual(values = c(`TRUE` = ROSS_LT_PAL[1], `FALSE` = ROSS_LT_PAL[2])) +
+  labs(x = NULL, y = "predicted Secchi depth (m)", color = "passes all applicability checks") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Export
+
+One row per scene and site across the whole NW/CLP pull, with every estimate and the columns needed to decide which to include: the QA values and flags at both levels, and the applicability flags. The data dictionary describes each column, and `NW_CLP_relaxedQA_model_provenance.json` records the model source and commit and the QA thresholds used.
+
+```{r export}
+data_dictionary <- export_data_dictionary(aoa_params, "production", typical_error_m = 1.3)
+
+relaxed_qa_predictions <- model_input %>%
+  rename(system_index = `system:index`) %>%
+  select(all_of(EXPORT_ID_COLS), pred_sdd, pred_seed_sd, all_of(EXPORT_QA_COLS), all_of(EXPORT_CHECK_COLS)) %>%
+  arrange(gnis_name, r_id, date)
+stopifnot("data dictionary out of sync with the exported columns" =
+            setequal(unlist(str_split(data_dictionary$column, ", ")), names(relaxed_qa_predictions)))
+
+write_csv(relaxed_qa_predictions, file.path(RESULTS_DIR, "NW_CLP_relaxedQA_predictions.csv"))
+write_feather(relaxed_qa_predictions, file.path(RESULTS_DIR, "NW_CLP_relaxedQA_predictions.feather"))
+write_csv(data_dictionary, file.path(RESULTS_DIR, "NW_CLP_relaxedQA_data_dictionary.csv"))
+write_csv(qa_log, file.path(RESULTS_DIR, "NW_CLP_relaxedQA_qa_steps.csv"))
+write_json(c(model_provenance("production"),
+             list(aoa_threshold = aoa_params$aoa_threshold, qa_thresholds = qa_thresholds(),
+                  run_date = as.character(Sys.Date()))),
+           file.path(RESULTS_DIR, "NW_CLP_relaxedQA_model_provenance.json"), auto_unbox = TRUE, pretty = TRUE, digits = NA)
+log("wrote %s rows to %s/", nrow(relaxed_qa_predictions), RESULTS_DIR)
+```
+
+## Curiosity: compare with the 2024 regional matchups
+
+`data/remoteSensing/regional_model/filtered_regional_sdd.feather` is the earlier (2024) regional training matchup set: in-situ SDD paired with Landsat bands. It has no `gnis_name`, so rows are matched on `nhd_permanent_identifier`, the same NHDPlusHR id this RS file carries as `permanent_identifier`. Of the five CLP reservoirs, only Chambers Lake appears in it. The comparison uses the scenes at those reservoirs that pass the relaxed QA.
+
+```{r regional-matchup-compare}
+relaxed_input <- model_input %>% filter(pass_qa_relaxed, str_detect(gnis_name, CLP_FOCUS_PATTERN))
+
+regional_2024 <- read_feather("data/remoteSensing/regional_model/filtered_regional_sdd.feather")
+focus_ids <- read_feather(NW_RS_PATH, col_select = c(gnis_name, permanent_identifier)) %>%
+  filter(str_detect(gnis_name, CLP_FOCUS_PATTERN)) %>%
+  mutate(permanent_identifier = as.character(permanent_identifier)) %>%
+  distinct()
+
+# in this file `calc_date` is the image date and `date` is the field date
+# (date_diff = date - calc_date)
+regional_focus <- regional_2024 %>%
+  inner_join(focus_ids, by = c(nhd_permanent_identifier = "permanent_identifier")) %>%
+  rename(field_date = date, image_date = calc_date)
+
+# matchup count per reservoir in each source, 2016-2024: the 2024 file counts
+# in-situ matchups, the scratch run counts relaxed-QA scenes (per site)
+regional_focus %>%
+  filter(between(image_date, PLOT_START, PLOT_END)) %>%
+  count(gnis_name, name = "n_regional_2024_matchups") %>%
+  right_join(relaxed_input %>%
+               filter(between(date, PLOT_START, PLOT_END)) %>%
+               count(gnis_name, name = "n_scratch_scenes"),
+             by = "gnis_name") %>%
+  mutate(n_regional_2024_matchups = coalesce(n_regional_2024_matchups, 0L))
+
+# the matchups side by side with every scratch-run scene at the same reservoir
+# on the same image date (one row per scratch site)
+regional_focus %>%
+  select(gnis_name, date = image_date, field_date, date_diff, observed_sdd = harmonized_value,
+         CLOUD_COVER, regional_lat = WGS84_Latitude, regional_lon = WGS84_Longitude,
+         regional_dist_to_shore = dist_to_shore,
+         regional_Blue = med_Blue, regional_Green = med_Green, regional_Red = med_Red,
+         regional_Nir = med_Nir) %>%
+  left_join(relaxed_input %>%
+              select(gnis_name, date, r_id, lat, lon, med_Blue, med_Green, med_Red, med_Nir,
+                     pred_sdd, pass_plausible),
+            by = c("gnis_name", "date")) %>%
+  mutate(pred_minus_obs = pred_sdd - observed_sdd) %>%
+  arrange(date, r_id) %>%
+  as.data.frame()
+```
+
+On the plot: the observed SDD from the 2024 matchups (black crosses, at their image date) over the scratch run's relaxed-QA Chambers Lake estimates.
+
+```{r regional-matchup-plot, fig.width=8, fig.height=4}
+ggplot(relaxed_input %>% filter(str_detect(gnis_name, "Chambers"), between(date, PLOT_START, PLOT_END)),
+       aes(x = date, y = pred_sdd)) +
+  geom_point(aes(color = pass_plausible), alpha = 0.7) +
+  geom_point(data = regional_focus, aes(x = image_date, y = harmonized_value), shape = 4, size = 3, stroke = 1.2) +
+  scale_color_manual(values = c(`TRUE` = ROSS_LT_PAL[1], `FALSE` = ROSS_LT_PAL[2])) +
+  labs(x = NULL, y = "Secchi depth (m)", color = "passes all applicability checks",
+       title = "Chambers Lake: scratch estimates vs. 2024 regional matchups (x)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```

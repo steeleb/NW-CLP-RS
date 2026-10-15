@@ -1,0 +1,698 @@
+---
+title: "Northern Water / Cache la Poudre Out-of-Sample Application: Band-Only Model"
+author: "B Steele, Colorado State University, ROSSyndicate"
+date: "last updated Oct 15, 2026"
+output:
+  html_document:
+    fig_retina: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# all paths below are relative to the NW-CLP-RS repository root
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_rstudio_project))
+
+# band-only ensemble structure, set here (ahead of the introduction) so the
+# narrative text can reference it
+ENSEMBLE_SEEDS <- 601:610
+N_FOLDS <- 4
+```
+
+
+This notebook lives in the NW-CLP-RS repository (subdirectory `regional_SDD_application/`). It is the band-only counterpart of `NW_CLP_regional_application.Rmd`: it applies the Intermountain West regional **band-only** Secchi disc depth model built in [regional-clarity-RS-model](https://github.com/rossyndicate/regional-clarity-RS-model) ([workflow site](https://rossyndicate.github.io/regional-clarity-RS-model/)) to this repository's NW/CLP site-level Landsat pull, exactly as that notebook applies the production model.
+
+- **Purpose:** Apply the band-only ensemble to Northern Water / Cache la Poudre remote sensing data using the same siteSR QA, band harmonization, applicability checks, and Secchi matching as `NW_CLP_regional_application.Rmd`, score it against the NW/CLP Secchi record, and compare it with the production model.
+- **Inputs:**
+- this repository's collated Landsat RS data (`b_site_RS_data_acquisition/out/`);
+- the NW harmonized Secchi CSV (`data/waterQuality/harmonized/`);
+- the outputs of `NW_CLP_regional_application.Rmd` (run it first): its caches in `data/remoteSensing/IMW_regional_model_application/` (the AquaMatch scene metadata and lakeSR handoff coefficients, the band RANSAC flags, the site characteristics, and the gridMET weather) and its production-model results in that folder's `production/` subfolder, for the comparison;
+- the band-only model, downloaded from the regional model repository on GitHub, pinned to commit [`381fe98`](https://github.com/rossyndicate/regional-clarity-RS-model/tree/381fe98a1aea74a098834baeb44ac2688e10df38/regional_clarity/xg_models/v3_band_only) (`regional_clarity/xg_models/v3_band_only/`), the same commit the production notebook uses: each seed's feature list and fold models, and the applicability-check files (`applicability/aoa_parameters.json`, `applicability/aoa_reference.csv`, `applicability/training_region.geojson`), as described in that folder's [model card](https://github.com/rossyndicate/regional-clarity-RS-model/blob/381fe98a1aea74a098834baeb44ac2688e10df38/regional_clarity/xg_models/v3_band_only/README.md). The source is set in `regional_SDD_application/regional_model_source.R`. The model will also be published on the Hugging Face Hub ([`bgsteele/intermountain-west-regional-clarity-sdd-landsat-band-only`](https://huggingface.co/bgsteele/intermountain-west-regional-clarity-sdd-landsat-band-only)); that repository is not public yet, and once it is, the source can be switched there in that file.
+- **Outputs:** `data/remoteSensing/IMW_regional_model_application/band_only/`: predicted-vs-observed, evaluation, filter-step, and production-comparison CSVs; the full applied model across all data, `NW_CLP_full_predictions.feather` and `.csv` (with per-image applicability flags, the DI, and any inputs outside their training range); and `NW_CLP_model_provenance.json`, which records the model source and commit. The production notebook's outputs are not touched; the downloaded model files are cached alongside the production model's under `data/remoteSensing/IMW_regional_model_application/models/`.
+- **Directions followed:** the regional repository's [Applying the model](https://rossyndicate.github.io/regional-clarity-RS-model/applying_the_model.html) page.
+- **Adapted from:** `NW_CLP_regional_application.Rmd`, and the regional repository's [07b · Regional application (band-only)](https://rossyndicate.github.io/regional-clarity-RS-model/regional_clarity/07b_regional_application_band_only.html), which repeats the production application with the band-only ensemble in the same way.
+
+The band-only ensemble is the regional repository's `04b_make_models_band_only.ipynb` `r length(ENSEMBLE_SEEDS)`-seed, XGBoost-only ensemble (`r length(ENSEMBLE_SEEDS) * N_FOLDS` fold models). It was built from the same data, holdout, CV folds, and procedure as the production model, but its candidate features are limited to the harmonized Landsat bands, spectral indices, and the LaSRC atmospheric-correction flag. It needs no catchment, shoreline, or weather inputs. As with the production notebook, these sites are not used anywhere in the regional model's training or holdout data. Performance is reported against the observed Secchi depth record available from Northern Water (which is limited to NW reservoirs) and so confirms performance at these specific sites, not throughout the region.
+
+Everything other than the model is unchanged from the production notebook: scenes pass the same siteSR QA (pixel QA, surface-temperature bounds, scene cloud cover, and band RANSAC), and an estimate is evaluated only if it passes every applicability check (training region, training mission, seasonal window, complete inputs, training range, area of applicability, and the plausibility floor). The checks read the band-only model's own `applicability/` files, so the training ranges and AOA are those of the band-only feature space. Its AOA threshold is not comparable to the production model's. As in the production notebook, a failed check flags an estimate as an extrapolation rather than marking it wrong, and every QA'd image is exported with its flags, `di`, and `out_of_range`.
+
+Following 07b, the site characteristics and antecedent weather are still joined to the model input from the production notebook's caches, so the model input table is the same as production's. The band-only models never read those columns. The weather is still needed for the heavy-rain screen in the Secchi matching.
+
+
+## Setup
+
+Load packages and set the inputs: the NW/CLP remote sensing file, the NW Secchi record, the production notebook's cache directory, the source of the band-only model (`regional_model_source.R`), and the output directory. The siteSR QA thresholds, matching window, and rain screen are the production notebook's.
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(AquaMatchr) # if install needed: remotes::install_github(repo = "AquaSat/AquaMatchr")
+library(arrow)
+library(tidyverse)
+library(sf)
+library(data.table)
+library(xgboost)
+library(jsonlite)
+library(Metrics)
+library(RANN)
+
+log <- function(...) cat(sprintf("[%s] ", format(Sys.time(), "%H:%M:%S")), sprintf(...), "\n")
+
+NW_RS_PATH <- "b_site_RS_data_acquisition/out/2025-04-01/NW_Poudre_Historical_collated_DSWE1_site_meta_v2025-04-01.feather"
+SDD_PATH <- "data/waterQuality/harmonized/Secchi_data_NW_harmonized_2024-01-01.csv"
+
+# production notebook's outputs and caches - read only
+PRODUCTION_OUT_DIR <- "data/remoteSensing/IMW_regional_model_application"
+AQUAMATCH_DIR <- file.path(PRODUCTION_OUT_DIR, "aquamatch_downloads")
+production_cache <- function(file_name) {
+  path <- file.path(PRODUCTION_OUT_DIR, file_name)
+  stopifnot("production notebook cache missing - run NW_CLP_regional_application.Rmd first" = file.exists(path))
+  path
+}
+# production notebook's results, for the comparison with the production model
+PRODUCTION_RESULTS_DIR <- file.path(PRODUCTION_OUT_DIR, "production")
+production_result <- function(file_name) {
+  path <- file.path(PRODUCTION_RESULTS_DIR, file_name)
+  stopifnot("production notebook result missing - run NW_CLP_regional_application.Rmd first" = file.exists(path))
+  path
+}
+
+OUT_DIR <- file.path(PRODUCTION_OUT_DIR, "band_only")
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+# band-only model files are downloaded from the regional repository on
+# GitHub, pinned to the same commit as the production model, and cached under
+# the production notebook's models/ directory. The source, its pin, and the
+# eventual switch to the Hugging Face Hub are set in regional_model_source.R.
+source("regional_SDD_application/regional_model_source.R")
+MODEL <- "band_only"
+model_file <- function(rel_path) fetch_model_file(rel_path, MODEL)
+log("model source: %s %s @ %s", MODEL_SOURCE, MODEL_FOLDERS[[MODEL]], substr(model_source_ref(), 1, 7))
+
+# siteSR QA thresholds (as in the regional repository's 01_filter_AquaMatch_Data.Rmd)
+DSWE1_SHARE_MIN <- 0.5 # minimum pCount_dswe1 / pCount_dswe_gt0
+DSWE1_COUNT_MIN <- 8 # pCount_dswe1 must exceed this
+SURFACE_TEMP_RANGE_K <- c(273.15, 313.15) # 0-40 °C
+CLOUD_COVER_MAX <- 20 # scene-level cloud cover, %
+
+# matchup window and heavy-rain screen (as in 02a_make_matches.Rmd)
+MATCH_WINDOW_DAYS <- 5
+HEAVY_RAIN_MM <- 25.4  # NOAA/EPA "heavy precipitation day" threshold (1 inch/24hr)
+
+# first date shown in the time-series figure
+TIMESERIES_START <- ymd("2008-01-01")
+
+ROSS_LT_PAL <- c("#002EA3", "#E70870", "#256BF5", "#745CFB", "#1E4D2B", "#56104E", "#888888")
+MODEL_PAL <- c(production = ROSS_LT_PAL[1], `band-only` = ROSS_LT_PAL[2])
+```
+
+## AquaMatch inputs
+
+The Landsat scene metadata (for scene-level cloud cover) and the lakeSR handoff coefficients (for cross-sensor band harmonization) are the files the production notebook downloaded from AquaMatch on EDI.
+
+```{r aquamatch-inputs}
+scene_meta_files <- c(production_cache("aquamatch_downloads/sceneMetadata_Landsat457.csv"),
+                      production_cache("aquamatch_downloads/sceneMetadata_Landsat89.csv"))
+HANDOFFS_PATH <- production_cache("aquamatch_downloads/lakeSR_handoff_coefficients.csv")
+```
+
+## Read and QA-filter the RS data
+
+The same siteSR QA as the production notebook, which follows the regional repository's `01_filter_AquaMatch_Data.Rmd`:
+
+- **Pixel QA:** `pCount_dswe1/pCount_dswe_gt0 > `r DSWE1_SHARE_MIN``, `pCount_dswe1 > `r DSWE1_COUNT_MIN``, `prop_clouds == 0`.
+- **Surface temperature:** median surface temperature between `r SURFACE_TEMP_RANGE_K[1] - 273.15` °C and `r SURFACE_TEMP_RANGE_K[2] - 273.15` °C.
+- **Scene cloud cover < `r CLOUD_COVER_MAX`%,** from AquaMatch's scene-level metadata, matched on the Landsat scene identifier. A scene missing from that metadata cannot be confirmed as clear and is dropped.
+
+Band RANSAC follows the band harmonization below. Each step's row and site counts are logged in `qa_log`. The mission codes are recoded to AquaMatch's `"LT04"` style, and the image date is parsed from `system:index`, as in the production notebook.
+
+```{r read-filter}
+NW_RS_raw <- read_feather(NW_RS_PATH)
+log("raw: %s rows, %s unique sites (r_id)", nrow(NW_RS_raw), n_distinct(NW_RS_raw$r_id))
+
+MISSION_CODES <- c(LANDSAT_4 = "LT04", LANDSAT_5 = "LT05", LANDSAT_7 = "LE07",
+                   LANDSAT_8 = "LC08", LANDSAT_9 = "LC09")
+
+NW_RS <- NW_RS_raw %>%
+  mutate(mission = unname(MISSION_CODES[mission])) %>%
+  mutate(across(c(pCount_dswe1, pCount_dswe_gt0, prop_clouds,
+                  med_Red, med_Blue, med_Green, med_Nir, med_Swir1, med_Swir2, med_SurfaceTemp),
+                as.numeric)) %>%
+  filter(pCount_dswe1 / pCount_dswe_gt0 > DSWE1_SHARE_MIN, pCount_dswe1 > DSWE1_COUNT_MIN, prop_clouds == 0)
+
+log_qa <- function(qa_log, df, step) {
+  bind_rows(qa_log, tibble(step = step, n_rows = nrow(df), n_sites = n_distinct(df$r_id)))
+}
+qa_log <- tibble(step = "Raw NW/CLP siteSR rows", n_rows = nrow(NW_RS_raw), n_sites = n_distinct(NW_RS_raw$r_id))
+qa_log <- log_qa(qa_log, NW_RS, "Pixel QA (DSWE share/count, no clouds in buffer)")
+
+NW_RS <- NW_RS %>% filter(between(med_SurfaceTemp, SURFACE_TEMP_RANGE_K[1], SURFACE_TEMP_RANGE_K[2]))
+qa_log <- log_qa(qa_log, NW_RS, sprintf("Median surface temperature %s-%s °C",
+                                        SURFACE_TEMP_RANGE_K[1] - 273.15, SURFACE_TEMP_RANGE_K[2] - 273.15))
+
+SCENE_ID_PATTERN <- "L[CTE]0\\d_\\d{6}_\\d{8}"
+scene_meta <- scene_meta_files %>%
+  map(~ read_csv(.x, show_col_types = FALSE, col_select = c(sat_id, CLOUD_COVER))) %>%
+  bind_rows() %>%
+  mutate(scene_id = str_extract(sat_id, SCENE_ID_PATTERN))
+clear_scenes <- scene_meta %>%
+  filter(CLOUD_COVER < CLOUD_COVER_MAX) %>%
+  pull(scene_id) %>%
+  unique()
+
+NW_RS <- NW_RS %>%
+  mutate(scene_id = str_extract(`system:index`, SCENE_ID_PATTERN))
+scene_meta_coverage <- mean(unique(NW_RS$scene_id) %in% scene_meta$scene_id)
+NW_RS <- NW_RS %>% filter(scene_id %in% clear_scenes)
+qa_log <- log_qa(qa_log, NW_RS, sprintf("Scene cloud cover < %s%%", CLOUD_COVER_MAX))
+
+index_parts <- str_split(NW_RS$`system:index`, "_")
+NW_RS <- NW_RS %>%
+  mutate(date = as.Date(map_chr(index_parts, ~ .x[length(.x) - 1]), format = "%Y%m%d"),
+         lat = Latitude, lon = Longitude)
+stopifnot("date parsing failed for some rows" = sum(is.na(NW_RS$date)) == 0)
+
+log("QA-filtered: %s rows, %s unique sites, date range %s to %s",
+    nrow(NW_RS), n_distinct(NW_RS$r_id), min(NW_RS$date), max(NW_RS$date))
+```
+
+## Cross-sensor band harmonization
+
+The AquaMatch Gardner polynomial handoffs to Landsat 7, applied with `AquaMatchr::apply_handoffs()` exactly as in the production notebook. `apply_handoffs()` only works file to file, so it reads and writes temp files that are deleted afterward.
+
+```{r band-correction}
+handoff_in <- tempfile(fileext = ".feather")
+handoff_out <- tempfile(fileext = ".parquet")
+write_feather(NW_RS, handoff_in)
+
+apply_handoffs(input_path = handoff_in,
+               handoff_path = HANDOFFS_PATH,
+               correction_method = "Gardner_poly",
+               sat_target = "LS7",
+               algal_mask = FALSE,
+               output_file = handoff_out)
+
+NW_RS_corr <- read_parquet(handoff_out) %>%
+  rename(red_corr7 = red_corr_7, green_corr7 = green_corr_7, blue_corr7 = blue_corr_7,
+         nir_corr7 = nir_corr_7, swir1_corr7 = swir1_corr_7, swir2_corr7 = swir2_corr_7,
+         temp_corr7 = surfacetemp_corr_7) %>%
+  select(-c(sat_harmonize, correction, dswe, sat_to, method), -matches("^flag_.*_7$")) %>%
+  mutate(atm_corr_LaSRC = as.numeric(mission %in% c("LC08", "LC09"))) %>%
+  # apply_handoffs() does not preserve row order
+  arrange(r_id, date, `system:index`)
+unlink(c(handoff_in, handoff_out))
+stopifnot("band harmonization changed the row count" = nrow(NW_RS_corr) == nrow(NW_RS))
+```
+
+## Band RANSAC
+
+The QA'd, harmonized scenes are the same as the production notebook's, so its cached band RANSAC flags are reused rather than re-running RANSAC. Every scene must have a flag; a scene without one means the QA or the input file has changed since the production notebook last ran.
+
+```{r band-ransac}
+ransac_flags <- read_feather(production_cache("NW_CLP_band_ransac_flags.feather"))
+stopifnot("system:index is not unique per row" = !anyDuplicated(NW_RS_corr$`system:index`))
+stopifnot("scenes missing from the production RANSAC cache - re-run NW_CLP_regional_application.Rmd" =
+            all(NW_RS_corr$`system:index` %in% ransac_flags$`system:index`))
+
+NW_RS_corr <- NW_RS_corr %>%
+  left_join(ransac_flags, by = "system:index") %>%
+  filter(is_band_inlier | is.na(is_band_inlier)) %>%
+  select(-is_band_inlier)
+qa_log <- log_qa(qa_log, NW_RS_corr, "Band RANSAC")
+qa_log
+```
+
+## Spectral indices
+
+The same 9 curated ratios and indices as the production notebook (an R port of the regional repository's `add_spectral_indices()`).
+
+```{r spectral-indices}
+add_spectral_indices <- function(df) {
+  df %>%
+    mutate(BR = blue_corr7 / red_corr7,
+           BG = blue_corr7 / green_corr7,
+           NR = nir_corr7 / red_corr7,
+           GR = green_corr7 / red_corr7,
+           fai = nir_corr7 - (red_corr7 + (swir1_corr7 - red_corr7) * ((830 - 660) / (1650 - 660))),
+           NDVI = (nir_corr7 - red_corr7) / (nir_corr7 + red_corr7),
+           NDSSI = (blue_corr7 - nir_corr7) / (blue_corr7 + nir_corr7),
+           NDWI = (green_corr7 - nir_corr7) / (green_corr7 + nir_corr7),    # McFeeters 1996
+           MNDWI = (green_corr7 - swir1_corr7) / (green_corr7 + swir1_corr7)) %>%  # Xu 2006
+    mutate(across(c(BR, BG, NR, GR, fai, NDVI, NDSSI, NDWI, MNDWI),
+                  ~ if_else(is.finite(.x), .x, NA_real_)))
+}
+
+NW_RS_ml <- add_spectral_indices(NW_RS_corr)
+
+log("%s rows, %s unique sites after band correction + spectral indices", nrow(NW_RS_ml), n_distinct(NW_RS_ml$r_id))
+```
+
+## Assemble the model input table
+
+Bands and indices, joined to the production notebook's cached site characteristics and weather summaries and coarsened the same way, so the table is identical to production's. The band-only models read only the band-derived columns.
+
+```{r assemble}
+sites_unique <- read_feather(production_cache("NW_CLP_site_characteristics.feather"))
+weather_summaries <- read_feather(production_cache("NW_CLP_weather_summaries.feather"))
+
+model_input <- NW_RS_ml %>%
+  left_join(sites_unique %>% select(-lat, -lon, -comid), by = "r_id") %>%
+  left_join(weather_summaries, by = c("r_id", "date")) %>%
+  as.data.frame()
+
+CATCHMENT_WINSORIZE_CAP_SQKM <- 617.1
+
+coarsen_site_features <- function(df) {
+  df %>%
+    mutate(catchment_area_sqkm = if_else(catchment_area_sqkm > 0,
+                                         10^round(log10(pmin(catchment_area_sqkm, CATCHMENT_WINSORIZE_CAP_SQKM)), 1),
+                                         catchment_area_sqkm),
+           across(c(pct_impervious_2006, pct_urban_2006, pct_forest_2006,
+                    pct_cropland_2006, pct_wetland_2006), ~ round(.x, 0)))
+}
+
+model_input <- coarsen_site_features(model_input)
+log("model input: %s rows, %s cols", nrow(model_input), ncol(model_input))
+```
+
+## Load the `r length(ENSEMBLE_SEEDS)`-seed band-only ensemble and predict
+
+Each seed's own final feature set (`backward_elim_summary.json`) and fold models (`v3_band_only/seed{`r min(ENSEMBLE_SEEDS)`-`r max(ENSEMBLE_SEEDS)`}/`, downloaded from GitHub at `REGIONAL_REPO_REF`) are used as trained, with no re-selection or re-tuning, following the "Predicting in R" directions on the regional repository's [Applying the model](https://rossyndicate.github.io/regional-clarity-RS-model/applying_the_model.html#predicting-in-r) page. The spread of the `r length(ENSEMBLE_SEEDS)` seed means (`pred_seed_sd`) measures how much the ensemble members disagree; it is not a prediction interval (typical error against in situ SDD is about 1.4 m for this model). Every QA'd scene receives a prediction. Scenes with a missing input (for example, a band ratio that divides by zero) are still predicted, using XGBoost's native handling of `NA`, but they fail the completeness check below and are excluded from evaluation.
+
+```{r predict}
+seed_preds <- vector("list", length(ENSEMBLE_SEEDS))
+
+for (i in seq_along(ENSEMBLE_SEEDS)) {
+  seed <- ENSEMBLE_SEEDS[i]
+  seed_dir <- paste0("seed", seed)
+  feats <- seed_features(seed, MODEL)
+
+  missing_cols <- setdiff(feats, names(model_input))
+  stopifnot("model input is missing columns this seed's model needs" = length(missing_cols) == 0)
+
+  X <- as.matrix(model_input[, feats])
+  fold_preds <- matrix(NA_real_, nrow = nrow(X), ncol = N_FOLDS)
+  for (fold in seq_len(N_FOLDS)) {
+    booster <- xgb.load(model_file(file.path(seed_dir, paste0("xgboost_fold", fold, ".json"))))
+    fold_preds[, fold] <- predict(booster, X)
+  }
+  seed_preds[[i]] <- rowMeans(fold_preds)
+  log("seed%s: predicted (%s features: %s)", seed, length(feats), paste(feats, collapse = ", "))
+}
+
+seed_preds <- do.call(cbind, seed_preds)
+model_input$pred_sdd <- rowMeans(seed_preds)
+model_input$pred_seed_sd <- apply(seed_preds, 1, sd)
+log("prediction summary:"); print(summary(model_input$pred_sdd))
+log("spread across seeds (pred_seed_sd), median: %.3f m", median(model_input$pred_seed_sd))
+```
+
+## Applicability checks
+
+The same seven checks as the production notebook, in the same order (checks 2–8 of the [band-only model card](https://github.com/rossyndicate/regional-clarity-RS-model/blob/381fe98a1aea74a098834baeb44ac2688e10df38/regional_clarity/xg_models/v3_band_only/README.md); its check 1, the siteSR QA, is applied above):
+
+1. the site falls inside the training region (the HUC4 basins that overlap the six-state region by at least half);
+2. the scene comes from a Landsat mission represented in training;
+3. it falls within the seasonal window of the training matchups (the central 98% of their day of year);
+4. every model input is available;
+5. every model input falls within the training range;
+6. the scene falls inside the area of applicability (AOA; Meyer & Pebesma 2021);
+7. the estimate is no shallower than the shallowest SDD in the training data.
+
+They read the band-only model's `applicability/aoa_parameters.json`, `applicability/aoa_reference.csv`, and `applicability/training_region.geojson`, which 07b writes. As the regional repository's directions require, the band-only estimates are flagged only with the band-only model's files. Checks 4–6 are defined by the band-only model's own inputs, so check 4 cannot fail for missing LakeCat or gridMET data, and the AOA is computed over the band-only model's unanimous core and SHAP weights.
+
+```{r applicability-reference}
+aoa_params <- fromJSON(model_file("applicability/aoa_parameters.json"))
+aoa_reference <- read_csv(model_file("applicability/aoa_reference.csv"), show_col_types = FALSE)
+training_region <- read_training_region(MODEL)
+
+feature_ranges <- aoa_params$feature_ranges
+aoa_features <- aoa_params$aoa_features
+season_window <- aoa_params$season_window_doy
+
+model_feats <- map(ENSEMBLE_SEEDS, \(s) seed_features(s, MODEL)) %>%
+  unlist() %>%
+  unique()
+stopifnot("published training ranges do not cover the model's features" =
+            setequal(model_feats, feature_ranges$feature))
+
+log("seasonal window: day of year %s-%s", season_window[1], season_window[2])
+log("AOA threshold (DI): %.3f, reference: %s training rows", aoa_params$aoa_threshold, nrow(aoa_reference))
+```
+
+### Training region, training range, seasonal window, completeness, and AOA
+
+`in_region()` and `out_of_range()` are defined in `regional_model_source.R`.
+
+```{r applicability-functions}
+in_range <- function(df) {
+  ok <- rep(TRUE, nrow(df))
+  for (i in seq_len(nrow(feature_ranges))) {
+    x <- df[[feature_ranges$feature[i]]]
+    ok <- ok & !is.na(x) & x >= feature_ranges$min[i] & x <= feature_ranges$max[i]
+  }
+  ok
+}
+
+feature_complete <- function(df) complete.cases(df[, feature_ranges$feature])
+
+in_season <- function(df) between(yday(df$date), season_window[1], season_window[2])
+
+# standardize and weight in the same feature order as aoa_reference.csv
+reference_X <- as.matrix(aoa_reference[, aoa_features$feature])
+
+compute_di <- function(df) {
+  X <- as.matrix(df[, aoa_features$feature])
+  X <- sweep(sweep(X, 2, aoa_features$center), 2, aoa_features$scale, "/")
+  X <- sweep(X, 2, aoa_features$weight, "*")
+  di <- rep(NA_real_, nrow(df))
+  ok <- complete.cases(X)
+  di[ok] <- nn2(reference_X, X[ok, , drop = FALSE], k = 1)$nn.dists[, 1] / aoa_params$d_bar
+  di
+}
+```
+
+### Apply the checks
+
+Each check builds on the previous one. The table counts scenes (rows) and sites remaining after each step, starting from the siteSR QA steps above.
+
+```{r apply-checks}
+model_input <- model_input %>%
+  mutate(pass_region = in_region(lon, lat, training_region),
+         pass_mission = pass_region & mission %in% aoa_params$training_missions,
+         pass_season = pass_mission & in_season(.),
+         pass_complete = pass_season & feature_complete(.),
+         pass_range = pass_complete & in_range(.),
+         out_of_range = out_of_range(., feature_ranges),
+         di = compute_di(.),
+         pass_aoa = pass_range & !is.na(di) & di <= aoa_params$aoa_threshold,
+         pass_plausible = pass_aoa & pred_sdd >= aoa_params$min_training_sdd_m)
+
+PASS_COLS <- c("pass_region", "pass_mission", "pass_season", "pass_complete", "pass_range", "pass_aoa", "pass_plausible")
+filter_steps <- qa_log %>%
+  bind_rows(tibble(
+    step = c("Inside training region",
+             "Landsat mission represented in training",
+             "Within seasonal window of training matchups",
+             "All model inputs available",
+             "Within training range of every input",
+             "Inside area of applicability",
+             "Estimate no shallower than training minimum"),
+    n_rows = map_int(PASS_COLS, \(col) sum(model_input[[col]])),
+    n_sites = map_int(PASS_COLS, \(col) n_distinct(model_input$r_id[model_input[[col]]]))
+  ))
+filter_steps
+```
+
+## Match to observed Secchi depth
+
+The same matching as the production notebook: GNIS-name harmonization, a ±`r MATCH_WINDOW_DAYS`-day window, a heavy single-day rain screen (≥ `r HEAVY_RAIN_MM` mm) applied to candidate pairs before the closest-in-time selection, and de-duplication by **image**, so each overpass contributes one (prediction, observation) pair. Only scenes that pass every applicability check are matched for the primary evaluation. The same matching is also run on every QA'd scene, with the checks ignored, for comparison.
+
+```{r match-observed}
+NW_sdd <- read_csv(SDD_PATH, show_col_types = FALSE) %>%
+  mutate(gnis_name = case_when(feature == "Carter Lake" ~ "Carter Lake Reservoir",
+                               feature == "Shadow Mountain Reservoir" ~ "Shadow Mountain Lake",
+                               feature == "Granby Reservoir" ~ "Lake Granby",
+                               TRUE ~ feature))
+
+res_names <- unique(NW_sdd$gnis_name)
+log("%s reservoirs with observed SDD: %s", length(res_names), paste(res_names, collapse = ", "))
+
+weather_raw_rain <- read_feather(production_cache("NW_CLP_weather_raw.feather")) %>% mutate(date = as.Date(date))
+site_res_lookup <- model_input %>% distinct(r_id, gnis_name)
+weather_raw_res <- weather_raw_rain %>%
+  inner_join(site_res_lookup, by = "r_id") %>%
+  select(gnis_name, date, pr)
+
+match_to_observed <- function(preds) {
+  pred_at_obs_res <- preds %>%
+    filter(gnis_name %in% res_names) %>%
+    summarise(predicted = mean(pred_sdd), .by = c(date, gnis_name)) %>%
+    rename(date_pred = date)
+
+  obs_at_res <- NW_sdd %>%
+    summarise(observed = mean(value), .by = c(date, gnis_name)) %>%
+    rename(date_obs = date)
+
+  # every (obs, pred) candidate pair per reservoir within the window
+  candidates <- obs_at_res %>%
+    inner_join(pred_at_obs_res, by = "gnis_name", relationship = "many-to-many") %>%
+    mutate(time_diff = as.numeric(date_pred - date_obs)) %>%
+    filter(abs(time_diff) <= MATCH_WINDOW_DAYS)
+
+  # peak single-day precip at any site in the reservoir between the image date
+  # and the field date (a data.table non-equi join, as in 02a_make_matches.Rmd)
+  candidates <- candidates %>%
+    mutate(gap_start = pmin(date_obs, date_pred), gap_end = pmax(date_obs, date_pred),
+           cand_id = row_number())
+
+  candidates_dt <- as.data.table(candidates)
+  wx_dt <- as.data.table(weather_raw_res)
+  setkey(wx_dt, gnis_name, date)
+
+  joined <- wx_dt[candidates_dt, on = .(gnis_name, date > gap_start, date <= gap_end),
+                  nomatch = NA, allow.cartesian = TRUE]
+  gap_max <- joined[, .(gap_max_precip_mm = max(pr, na.rm = TRUE)), by = cand_id]
+  gap_max[!is.finite(gap_max_precip_mm), gap_max_precip_mm := 0]
+
+  candidates <- candidates %>%
+    left_join(as.data.frame(gap_max), by = "cand_id") %>%
+    mutate(gap_max_precip_mm = coalesce(gap_max_precip_mm, 0))
+
+  n_flagged <- sum(candidates$gap_max_precip_mm >= HEAVY_RAIN_MM)
+  log("%s / %s candidate (obs, image) pairs flagged for a heavy single-day rain event (>= %.1f mm) in their gap - excluded before closest-match selection",
+      n_flagged, nrow(candidates), HEAVY_RAIN_MM)
+
+  candidates <- candidates %>%
+    filter(gap_max_precip_mm < HEAVY_RAIN_MM) %>%
+    select(-gap_start, -gap_end, -cand_id, -gap_max_precip_mm)
+
+  # keep the single SDD observation closest in time to each image
+  pred_obs <- candidates %>%
+    arrange(gnis_name, date_pred, abs(time_diff)) %>%
+    distinct(gnis_name, date_pred, .keep_all = TRUE) %>%
+    rename(date = date_obs) %>%
+    select(-date_pred)
+
+  n_obs_reused <- nrow(pred_obs) - n_distinct(pred_obs %>% select(gnis_name, date))
+  log("%s matched (image, reservoir) pairs within +/- %s days, one SDD measurement kept per image",
+      nrow(pred_obs), MATCH_WINDOW_DAYS)
+  log("%s of those SDD measurements were the closest available observation for more than one image",
+      n_obs_reused)
+  log("time_diff (pred image date - obs sample date): mean=%.2f, median=%.1f, range=[%s, %s] days",
+      mean(pred_obs$time_diff), median(pred_obs$time_diff), min(pred_obs$time_diff), max(pred_obs$time_diff))
+  pred_obs
+}
+
+pred_obs <- match_to_observed(filter(model_input, pass_plausible))
+log("-- comparison: same matching, applicability checks ignored --")
+pred_obs_all_qa <- match_to_observed(model_input)
+```
+
+Check whether the time gap within a matchup relates to prediction error.
+
+```{r match-quality-check}
+pred_obs <- pred_obs %>% mutate(abs_error = abs(predicted - observed))
+gap_corr <- cor(abs(pred_obs$time_diff), pred_obs$abs_error)
+log("Pearson r(|time_diff|, abs_error) = %.3f (n=%s)", gap_corr, nrow(pred_obs))
+
+ggplot(pred_obs, aes(x = time_diff, y = abs_error)) +
+  geom_point(size = 2, alpha = 0.6, color = ROSS_LT_PAL[1]) +
+  labs(x = "time gap: predicted image date minus observed sample date (days)",
+       y = "absolute prediction error (m)",
+       title = sprintf("match-up time gap vs. error (Pearson r=%.2f)", gap_corr)) +
+  theme_bw()
+```
+
+## Predicted vs. observed
+
+Band-only ensemble estimates against observed Secchi depth for every matched image, colored by reservoir. The grey line is 1:1.
+
+```{r pred-obs-plot}
+pred_obs <- pred_obs |>
+  mutate(resid = predicted - observed)
+ggplot(pred_obs, aes(x = observed, y = predicted, color = gnis_name)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_abline(slope = 1, intercept = 0, color = "grey40") +
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous(limits = c(0, NA)) +
+  scale_color_manual(values = ROSS_LT_PAL) +
+  labs(x = "observed Secchi depth (m)", y = "predicted Secchi depth (m)", color = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+Error metrics across all matched observations, then by reservoir (worst to best RMSE), then with and without the applicability checks.
+
+```{r metrics}
+evals_NW <- pred_obs %>%
+  summarise(rmse = rmse(observed, predicted),
+            mae = mae(observed, predicted),
+            mape = mape(observed, predicted),
+            bias = bias(observed, predicted),
+            p.bias = percent_bias(observed, predicted),
+            smape = smape(observed, predicted),
+            r2 = cor(observed, predicted)^2,
+            n = n())
+evals_NW
+
+evals_NW_by_res <- pred_obs %>%
+  summarise(rmse = rmse(observed, predicted), bias = bias(observed, predicted),
+            r2 = cor(observed, predicted)^2, n = n(),
+            .by = gnis_name) %>%
+  arrange(desc(rmse))
+evals_NW_by_res
+
+evals_NW_checks <- bind_rows(
+  pred_obs %>% mutate(scenes = "passes every applicability check"),
+  pred_obs_all_qa %>% mutate(scenes = "all QA'd scenes (checks ignored)")
+) %>%
+  summarise(rmse = rmse(observed, predicted), mae = mae(observed, predicted),
+            bias = bias(observed, predicted), r2 = cor(observed, predicted)^2, n = n(),
+            .by = scenes)
+evals_NW_checks
+```
+
+## Time series
+
+Predicted and observed Secchi depth through time for each reservoir from `r year(TIMESERIES_START)` onward.
+
+```{r timeseries}
+pred_obs %>%
+  filter(date > TIMESERIES_START) %>%
+  pivot_longer(c(predicted, observed), names_to = "source", values_to = "value") %>%
+  ggplot(aes(x = date, y = value, color = source)) +
+  geom_point(size = 2, alpha = 0.6) +
+  facet_grid(gnis_name ~ ., scales = "free_y", labeller = label_wrap_gen(15)) +
+  scale_color_manual(values = ROSS_LT_PAL) +
+  labs(x = NULL, y = "Secchi depth (m)", color = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Comparison with the production model
+
+The production model's results, from the production notebook's `production/` outputs. Both runs share the same QA'd scenes and the same matching, so the differences come from the model and its applicability checks.
+
+The filter cascades side by side: the siteSR QA rows are identical, and the applicability rows differ because each model's checks use its own inputs, training ranges, and AOA.
+
+```{r compare-filter-steps}
+production_filter_steps <- read_csv(production_result("NW_CLP_filter_steps.csv"), show_col_types = FALSE)
+filter_steps_compare <- production_filter_steps %>%
+  select(step, n_rows_production = n_rows, n_sites_production = n_sites) %>%
+  full_join(filter_steps %>% select(step, n_rows_band_only = n_rows, n_sites_band_only = n_sites),
+            by = "step")
+filter_steps_compare
+```
+
+The evaluation metrics, overall and by reservoir. Each model is scored on the matched images that pass its own applicability checks, so the matched sets can differ slightly.
+
+```{r compare-metrics}
+evals_compare <- bind_rows(
+  read_csv(production_result("NW_CLP_eval_metrics.csv"), show_col_types = FALSE) %>% mutate(model = "production"),
+  evals_NW %>% mutate(model = "band-only")
+) %>%
+  relocate(model)
+evals_compare
+
+evals_compare_by_res <- bind_rows(
+  read_csv(production_result("NW_CLP_eval_metrics_by_reservoir.csv"), show_col_types = FALSE) %>% mutate(model = "production"),
+  evals_NW_by_res %>% mutate(model = "band-only")
+) %>%
+  select(gnis_name, model, rmse, bias, r2, n) %>%
+  arrange(gnis_name, model)
+evals_compare_by_res
+```
+
+Both models' matched pairs on one plot, and the two models' estimates for the same image. The image comparison covers every QA'd image either model kept, averaged per site and date. Its points are colored by whether the image passes both models' checks, only one, or neither.
+
+```{r compare-plots, fig.width=10, fig.height=5}
+production_pred_obs <- read_csv(production_result("NW_CLP_pred_obs.csv"), show_col_types = FALSE)
+
+bind_rows(production_pred_obs %>% mutate(model = "production"),
+          pred_obs %>% mutate(model = "band-only")) %>%
+  ggplot(aes(x = observed, y = predicted, color = model)) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, color = "grey40") +
+  facet_wrap(~ gnis_name) +
+  scale_color_manual(values = MODEL_PAL) +
+  labs(x = "observed Secchi depth (m)", y = "predicted Secchi depth (m)", color = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+production_full <- read_feather(production_result("NW_CLP_full_predictions.feather"))
+per_image <- function(df) {
+  df %>% summarise(pred_sdd = mean(pred_sdd), pass_plausible = all(pass_plausible), .by = c(r_id, date, mission))
+}
+paired_images <- inner_join(per_image(production_full), per_image(model_input),
+                            by = c("r_id", "date", "mission"), suffix = c("_production", "_band_only")) %>%
+  mutate(checks = case_when(pass_plausible_production & pass_plausible_band_only ~ "passes both",
+                            pass_plausible_production ~ "production only",
+                            pass_plausible_band_only ~ "band-only only",
+                            .default = "passes neither"))
+log("images in both runs: %s (production: %s, band-only: %s)",
+    nrow(paired_images), nrow(per_image(production_full)), nrow(per_image(model_input)))
+
+paired_images %>%
+  summarise(n = n(),
+            r = cor(pred_sdd_production, pred_sdd_band_only),
+            mean_diff_m = mean(pred_sdd_band_only - pred_sdd_production),
+            sd_diff_m = sd(pred_sdd_band_only - pred_sdd_production),
+            .by = checks)
+
+ggplot(paired_images, aes(x = pred_sdd_production, y = pred_sdd_band_only, color = checks)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  scale_color_manual(values = c(`passes both` = ROSS_LT_PAL[1], `production only` = ROSS_LT_PAL[3],
+                                `band-only only` = ROSS_LT_PAL[2], `passes neither` = ROSS_LT_PAL[7])) +
+  coord_equal() +
+  labs(x = "predicted SDD, production model (m)", y = "predicted SDD, band-only model (m)", color = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Export
+
+Write the matched predicted/observed pairs, the overall and per-reservoir metrics, the comparison with and without the applicability checks, the step-by-step filter counts, the production comparison tables, and the full prediction record for every QA'd NW/CLP image, as both feather and CSV. Each row carries the ensemble estimate (`pred_sdd`, m) and the spread across seeds (`pred_seed_sd`, m), the cumulative pass/fail flag for each applicability check (`pass_plausible` is true only when every check passes), the dissimilarity index (`di`; the band-only AOA threshold is `r sprintf("%.3f", aoa_params$aoa_threshold)`), and the inputs outside their training range (`out_of_range`). `NW_CLP_model_provenance.json` records the model source and commit.
+
+```{r export}
+write_csv(pred_obs, file.path(OUT_DIR, "NW_CLP_pred_obs.csv"))
+write_csv(evals_NW, file.path(OUT_DIR, "NW_CLP_eval_metrics.csv"))
+write_csv(evals_NW_by_res, file.path(OUT_DIR, "NW_CLP_eval_metrics_by_reservoir.csv"))
+write_csv(evals_NW_checks, file.path(OUT_DIR, "NW_CLP_eval_metrics_applicability.csv"))
+write_csv(filter_steps, file.path(OUT_DIR, "NW_CLP_filter_steps.csv"))
+write_csv(filter_steps_compare, file.path(OUT_DIR, "NW_CLP_filter_steps_vs_production.csv"))
+write_csv(evals_compare, file.path(OUT_DIR, "NW_CLP_eval_metrics_vs_production.csv"))
+write_csv(evals_compare_by_res, file.path(OUT_DIR, "NW_CLP_eval_metrics_by_reservoir_vs_production.csv"))
+
+# full out-of-sample prediction record (not just the subset with a matched observation)
+full_predictions <- model_input %>%
+  select(r_id, date, mission, gnis_name, comid, lat, lon, pred_sdd, pred_seed_sd,
+         all_of(PASS_COLS), di, out_of_range)
+write_feather(full_predictions, file.path(OUT_DIR, "NW_CLP_full_predictions.feather"))
+write_csv(full_predictions, file.path(OUT_DIR, "NW_CLP_full_predictions.csv"))
+write_json(c(model_provenance(MODEL),
+             list(aoa_threshold = aoa_params$aoa_threshold, run_date = as.character(Sys.Date()))),
+           file.path(OUT_DIR, "NW_CLP_model_provenance.json"), auto_unbox = TRUE, pretty = TRUE, digits = NA)
+log("wrote outputs to %s/", OUT_DIR)
+```
+
+## Summary
+
+```{r summary-values, include=FALSE}
+# values quoted in the summary text below
+fmt_n <- function(x) format(x, big.mark = ",")
+fmt_pct <- function(x) scales::percent(x, accuracy = 1)
+
+n_qa_rows <- last(qa_log$n_rows)
+n_pass_band_only <- sum(model_input$pass_plausible)
+n_pass_production <- sum(production_full$pass_plausible)
+rmse_band_only <- evals_compare$rmse[evals_compare$model == "band-only"]
+rmse_production <- evals_compare$rmse[evals_compare$model == "production"]
+bias_band_only <- evals_compare$bias[evals_compare$model == "band-only"]
+bias_production <- evals_compare$bias[evals_compare$model == "production"]
+n_band_only <- evals_compare$n[evals_compare$model == "band-only"]
+n_production <- evals_compare$n[evals_compare$model == "production"]
+rmse_checks <- evals_NW_checks$rmse[evals_NW_checks$scenes == "passes every applicability check"]
+rmse_all_qa <- evals_NW_checks$rmse[evals_NW_checks$scenes == "all QA'd scenes (checks ignored)"]
+r_images_both <- with(filter(paired_images, checks == "passes both"), cor(pred_sdd_production, pred_sdd_band_only))
+```
+
+Of the `r fmt_n(n_qa_rows)` QA'd scene–site rows, `r fmt_n(n_pass_band_only)` (`r fmt_pct(n_pass_band_only / n_qa_rows)`) pass every band-only applicability check, compared with `r fmt_n(n_pass_production)` (`r fmt_pct(n_pass_production / n_qa_rows)`) for the production model. On matched images that pass its own checks, the band-only model has an RMSE of `r sprintf("%.3f", rmse_band_only)` m and a bias of `r sprintf("%+.3f", bias_band_only)` m (n = `r n_band_only`), against `r sprintf("%.3f", rmse_production)` m and `r sprintf("%+.3f", bias_production)` m for production (n = `r n_production`). Ignoring the band-only checks gives an RMSE of `r sprintf("%.3f", rmse_all_qa)` m. Where an image passes both models' checks, the two models' estimates correlate at r = `r sprintf("%.2f", r_images_both)`.

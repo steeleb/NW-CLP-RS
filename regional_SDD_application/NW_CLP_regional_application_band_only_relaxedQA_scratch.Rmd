@@ -1,0 +1,260 @@
+---
+title: "SCRATCH - NW/CLP band-only model, every siteSR row, with siteSR QA as flags"
+author: "B Steele, Colorado State University, ROSSyndicate"
+date: "last updated Oct 15, 2026"
+output:
+  html_document:
+    fig_retina: 1
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# all paths below are relative to the NW-CLP-RS repository root
+knitr::opts_knit$set(root.dir = rprojroot::find_root(rprojroot::is_rstudio_project))
+```
+
+> **SCRATCH.** The band-only counterpart of `NW_CLP_regional_application_relaxedQA_scratch.Rmd`: applies the regional **band-only** ensemble to every site and scene in this repository's NW/CLP RS pull, and plots the estimates for 2016–2024 at five CLP reservoirs (Barnes Meadow, Peterson, Chambers, Joe Wright, Long Draw). There is no Secchi matching or evaluation; `NW_CLP_regional_application_band_only.Rmd` scores the strict-QA estimates against the NW Secchi record.
+>
+> **Every siteSR row is passed through the model.** The siteSR QA is not used as a filter. Each QA step is carried as a flag instead, at both the strict thresholds the production notebook and the regional training data use and the relaxed thresholds set in `regional_SDD_application/siteSR_qa_flags.R`, alongside the values the flags are computed from. That file is shared with the production relaxed-QA notebook, so both exports carry identical QA flags. The band-only model's applicability checks are flagged in the same way. The end user can then decide which estimates to include. These are exported, with a data dictionary, to `data/remoteSensing/IMW_regional_model_application/relaxed_qa_band_only/`.
+>
+> The band-only model needs only the Landsat bands, spectral indices, and the LaSRC flag, so no site characteristics or weather are needed. The AquaMatch downloads and strict band RANSAC flags are read from the production notebook's caches in `OUT_DIR` (run that notebook first). The relaxed band RANSAC flags are shared with the production relaxed-QA notebook: whichever runs first computes and caches them. The band-only model files are downloaded as set in `regional_model_source.R`.
+
+## Setup
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(AquaMatchr)
+library(arrow)
+library(tidyverse)
+library(sf)
+library(xgboost)
+library(jsonlite)
+library(RANN)
+
+log <- function(...) cat(sprintf("[%s] ", format(Sys.time(), "%H:%M:%S")), sprintf(...), "\n")
+
+NW_RS_PATH <- "b_site_RS_data_acquisition/out/2025-04-01/NW_Poudre_Historical_collated_DSWE1_site_meta_v2025-04-01.feather"
+
+# production notebook's caches - read only
+OUT_DIR <- "data/remoteSensing/IMW_regional_model_application"
+AQUAMATCH_DIR <- file.path(OUT_DIR, "aquamatch_downloads")
+# band-only model files, downloaded and cached as set in regional_model_source.R
+source("regional_SDD_application/regional_model_source.R")
+MODEL <- "band_only"
+model_file <- function(rel_path) fetch_model_file(rel_path, MODEL)
+log("model source: %s %s @ %s", MODEL_SOURCE, MODEL_FOLDERS[[MODEL]], substr(model_source_ref(), 1, 7))
+
+# siteSR QA as flags: thresholds (strict and relaxed) and functions, shared
+# with the production relaxed-QA notebook so both flag rows identically
+source("regional_SDD_application/siteSR_qa_flags.R")
+
+# this notebook's results
+RESULTS_DIR <- file.path(OUT_DIR, "relaxed_qa_band_only")
+dir.create(RESULTS_DIR, showWarnings = FALSE, recursive = TRUE)
+# the relaxed band RANSAC cache, shared with the production relaxed-QA notebook
+RELAXED_RANSAC_CACHE <- file.path(OUT_DIR, "relaxed_qa", "NW_CLP_relaxedQA_band_ransac_flags.feather")
+# set to TRUE to re-run the relaxed band RANSAC (e.g. after changing the
+# relaxed thresholds or the RS input file)
+FORCE_REFRESH_CACHE <- FALSE
+
+ENSEMBLE_SEEDS <- 601:610
+N_FOLDS <- 4
+
+# reservoirs shown in the plots (every site is predicted and exported)
+CLP_FOCUS_PATTERN <- "Barnes|Peterson|Chambers|Joe Wright|Long Draw"
+PLOT_START <- ymd("2016-01-01")
+PLOT_END <- ymd("2025-01-01")
+
+ROSS_LT_PAL <- c("#002EA3", "#E70870", "#256BF5", "#745CFB", "#1E4D2B", "#56104E", "#888888")
+```
+
+## Read the RS data and flag the siteSR QA
+
+Every row in the RS file, at every site and in every year. Each QA step is computed as its own flag, not cumulatively, so a row's flags show every step it fails:
+
+- **Pixel QA** (`qa_pixel_strict`, `qa_pixel_relaxed`): `dswe1_share` (`pCount_dswe1 / pCount_dswe_gt0`) above `r STRICT_DSWE1_SHARE_MIN` / `r DSWE1_SHARE_MIN`, `pCount_dswe1` above `r STRICT_DSWE1_COUNT_MIN` / `r DSWE1_COUNT_MIN`, and `prop_clouds` at most `r STRICT_PROP_CLOUDS_MAX` / `r PROP_CLOUDS_MAX` (strict / relaxed).
+- **Surface temperature** (`qa_temp`, the same at both levels): median surface temperature between 0 and 40 °C.
+- **Scene cloud cover** (`qa_scene_cloud_strict`, `qa_scene_cloud_relaxed`): AquaMatch scene-level `CLOUD_COVER` below `r STRICT_CLOUD_COVER_MAX`% / `r CLOUD_COVER_MAX`%. A scene missing from the metadata fails the strict check and `r if (KEEP_SCENES_WITHOUT_METADATA) "passes" else "fails"` the relaxed one.
+
+A value that can't be computed (for example, a missing surface temperature) fails its check. Band RANSAC follows the band harmonization below.
+
+```{r read-flag}
+NW_RS <- read_and_flag_siteSR(NW_RS_PATH, AQUAMATCH_DIR)
+```
+
+## Cross-sensor band harmonization
+
+All rows, with the AquaMatch handoffs to Landsat 7, as in the production notebook.
+
+```{r band-correction}
+NW_RS_corr <- harmonize_bands(NW_RS, file.path(AQUAMATCH_DIR, "lakeSR_handoff_coefficients.csv"))
+```
+
+## Band RANSAC
+
+Band RANSAC is a per-site filter, so its outcome depends on which scenes it is run over. It is evaluated twice, each time on the scenes that pass the earlier QA steps at that level:
+
+- **Strict** (`band_inlier_strict`): the production notebook's cached RANSAC flags, which were run on the scenes that pass the strict pixel, temperature, and scene checks.
+- **Relaxed** (`band_inlier_relaxed`): the same function run on the scenes that pass the relaxed checks, cached alongside the production relaxed-QA notebook's results and shared with it.
+
+`TRUE` is an inlier and `FALSE` an outlier. `NA` means the row wasn't evaluated at that level, either because it failed an earlier step or because its site had 10 or fewer scenes to fit. Sites that RANSAC can't evaluate pass, as in `01`.
+
+```{r band-ransac}
+NW_RS_corr <- add_ransac_flags(NW_RS_corr,
+                               production_ransac_cache = file.path(OUT_DIR, "NW_CLP_band_ransac_flags.feather"),
+                               relaxed_ransac_cache = RELAXED_RANSAC_CACHE,
+                               force_refresh = FORCE_REFRESH_CACHE)
+```
+
+The QA cascade at each level, counting rows (scene–site pairs) and sites that pass every step so far:
+
+```{r qa-cascade}
+qa_log <- qa_cascade_log(NW_RS_corr)
+qa_log
+```
+
+## Model inputs
+
+The band-only model reads only the harmonized bands, spectral indices, and LaSRC flag.
+
+```{r assemble}
+model_input <- add_spectral_indices(NW_RS_corr) %>% as.data.frame()
+log("model input: %s rows, %s cols", nrow(model_input), ncol(model_input))
+```
+
+## Predict
+
+Every row is predicted, with each seed's own features (`backward_elim_summary.json`) and fold models. The spread of the `r length(ENSEMBLE_SEEDS)` seed means (`pred_seed_sd`) measures how much the ensemble members disagree; it is not a prediction interval.
+
+```{r predict}
+seed_preds <- map(ENSEMBLE_SEEDS, \(seed) {
+  seed_dir <- paste0("seed", seed)
+  feats <- seed_features(seed, MODEL)
+  stopifnot("model input is missing columns this seed's model needs" = all(feats %in% names(model_input)))
+  X <- as.matrix(model_input[, feats])
+  map(seq_len(N_FOLDS), \(fold) {
+    predict(xgb.load(model_file(file.path(seed_dir, paste0("xgboost_fold", fold, ".json")))), X)
+  }) %>%
+    reduce(`+`) / N_FOLDS
+}) %>%
+  do.call(cbind, .)
+model_input$pred_sdd <- rowMeans(seed_preds)
+model_input$pred_seed_sd <- apply(seed_preds, 1, sd)
+summary(model_input$pred_sdd)
+```
+
+## Applicability checks
+
+The band-only model's own checks, from its `applicability/` files, applied to every row and flagged but not filtered. They are cumulative among themselves (each `pass_*` is `TRUE` only if the row also passes every earlier check), but independent of the siteSR QA flags. Checks that depend on the inputs (completeness, training range, AOA) are defined by the band-only model's inputs, so its training ranges and AOA threshold differ from the production model's. `di` is reported for every row with all AOA inputs present, and `out_of_range` names the inputs outside their training range.
+
+```{r applicability}
+aoa_params <- fromJSON(model_file("applicability/aoa_parameters.json"))
+aoa_reference <- read_csv(model_file("applicability/aoa_reference.csv"), show_col_types = FALSE)
+training_region <- read_training_region(MODEL)
+feature_ranges <- aoa_params$feature_ranges
+aoa_features <- aoa_params$aoa_features
+season_window <- aoa_params$season_window_doy
+
+model_feats <- map(ENSEMBLE_SEEDS, \(s) seed_features(s, MODEL)) %>% unlist() %>% unique()
+stopifnot("published training ranges do not cover the model's features" =
+            setequal(model_feats, feature_ranges$feature))
+
+in_range <- function(df) {
+  ok <- rep(TRUE, nrow(df))
+  for (i in seq_len(nrow(feature_ranges))) {
+    x <- df[[feature_ranges$feature[i]]]
+    ok <- ok & !is.na(x) & x >= feature_ranges$min[i] & x <= feature_ranges$max[i]
+  }
+  ok
+}
+
+reference_X <- as.matrix(aoa_reference[, aoa_features$feature])
+compute_di <- function(df) {
+  X <- as.matrix(df[, aoa_features$feature])
+  X <- sweep(sweep(X, 2, aoa_features$center), 2, aoa_features$scale, "/")
+  X <- sweep(X, 2, aoa_features$weight, "*")
+  di <- rep(NA_real_, nrow(df))
+  ok <- complete.cases(X)
+  di[ok] <- nn2(reference_X, X[ok, , drop = FALSE], k = 1)$nn.dists[, 1] / aoa_params$d_bar
+  di
+}
+
+model_input <- model_input %>%
+  mutate(pass_region = in_region(lon, lat, training_region),
+         pass_mission = pass_region & mission %in% aoa_params$training_missions,
+         pass_season = pass_mission & between(yday(date), season_window[1], season_window[2]),
+         pass_complete = pass_season & complete.cases(model_input[, feature_ranges$feature]),
+         pass_range = pass_complete & in_range(.),
+         out_of_range = out_of_range(., feature_ranges),
+         di = compute_di(.),
+         pass_aoa = pass_range & !is.na(di) & di <= aoa_params$aoa_threshold,
+         pass_plausible = pass_aoa & pred_sdd >= aoa_params$min_training_sdd_m)
+
+log("AOA threshold (DI): %.3f", aoa_params$aoa_threshold)
+
+# rows passing every applicability check, by QA level
+model_input %>%
+  summarise(n_rows = n(),
+            n_pass_qa_strict = sum(pass_qa_strict),
+            n_pass_qa_relaxed = sum(pass_qa_relaxed),
+            n_pass_checks = sum(pass_plausible),
+            n_pass_qa_strict_and_checks = sum(pass_qa_strict & pass_plausible),
+            n_pass_qa_relaxed_and_checks = sum(pass_qa_relaxed & pass_plausible))
+```
+
+## Plot
+
+Predicted SDD for every scene at the five CLP reservoirs, 2016–2024, colored by the strictest QA level the scene passes. The second plot shows only the scenes that pass the relaxed QA, colored by whether they pass every band-only applicability check.
+
+```{r plot, fig.width=10, fig.height=6}
+qa_level_pal <- c(`passes strict QA` = ROSS_LT_PAL[1], `passes relaxed QA only` = ROSS_LT_PAL[3],
+                  `fails relaxed QA` = ROSS_LT_PAL[7])
+ross_data <- model_input %>%
+  filter(str_detect(gnis_name, CLP_FOCUS_PATTERN), between(date, PLOT_START, PLOT_END)) %>%
+  mutate(qa_level = factor(case_when(pass_qa_strict ~ "passes strict QA",
+                                     pass_qa_relaxed ~ "passes relaxed QA only",
+                                     .default = "fails relaxed QA"),
+                           levels = names(qa_level_pal)))
+
+ggplot(ross_data %>% arrange(desc(qa_level)), aes(x = date, y = pred_sdd, color = qa_level)) +
+  geom_point(alpha = 0.6) +
+  facet_wrap(gnis_name ~ .) +
+  scale_color_manual(values = qa_level_pal) +
+  labs(x = NULL, y = "predicted Secchi depth, band-only model (m)", color = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggplot(ross_data %>% filter(pass_qa_relaxed),
+       aes(x = date, y = pred_sdd, color = pass_plausible)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(gnis_name ~ .) +
+  scale_color_manual(values = c(`TRUE` = ROSS_LT_PAL[1], `FALSE` = ROSS_LT_PAL[2])) +
+  labs(x = NULL, y = "predicted Secchi depth, band-only model (m)", color = "passes all applicability checks") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Export
+
+One row per scene and site across the whole NW/CLP pull, with every band-only estimate and the columns needed to decide which to include: the QA values and flags at both levels, and the band-only applicability flags. The columns and QA flags match the production relaxed-QA export (`relaxed_qa/NW_CLP_relaxedQA_predictions.csv`), so the two can be joined on `r_id` and `system_index`. The data dictionary describes each column, and `NW_CLP_band_only_relaxedQA_model_provenance.json` records the model source and commit and the QA thresholds used.
+
+```{r export}
+data_dictionary <- export_data_dictionary(aoa_params, "band-only", typical_error_m = 1.4)
+
+relaxed_qa_predictions <- model_input %>%
+  rename(system_index = `system:index`) %>%
+  select(all_of(EXPORT_ID_COLS), pred_sdd, pred_seed_sd, all_of(EXPORT_QA_COLS), all_of(EXPORT_CHECK_COLS)) %>%
+  arrange(gnis_name, r_id, date)
+stopifnot("data dictionary out of sync with the exported columns" =
+            setequal(unlist(str_split(data_dictionary$column, ", ")), names(relaxed_qa_predictions)))
+
+write_csv(relaxed_qa_predictions, file.path(RESULTS_DIR, "NW_CLP_band_only_relaxedQA_predictions.csv"))
+write_feather(relaxed_qa_predictions, file.path(RESULTS_DIR, "NW_CLP_band_only_relaxedQA_predictions.feather"))
+write_csv(data_dictionary, file.path(RESULTS_DIR, "NW_CLP_band_only_relaxedQA_data_dictionary.csv"))
+write_csv(qa_log, file.path(RESULTS_DIR, "NW_CLP_band_only_relaxedQA_qa_steps.csv"))
+write_json(c(model_provenance(MODEL),
+             list(aoa_threshold = aoa_params$aoa_threshold, qa_thresholds = qa_thresholds(),
+                  run_date = as.character(Sys.Date()))),
+           file.path(RESULTS_DIR, "NW_CLP_band_only_relaxedQA_model_provenance.json"),
+           auto_unbox = TRUE, pretty = TRUE, digits = NA)
+log("wrote %s rows to %s/", nrow(relaxed_qa_predictions), RESULTS_DIR)
+```

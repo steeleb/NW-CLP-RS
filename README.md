@@ -103,3 +103,36 @@ _f_separate_NW_CLP_data_:
 This group of functions splits the data for individual research programs and 
 stores them in the ROSS Google Drive.
 
+
+------------------------------------------------------------------------
+
+## Regional SDD model application
+
+`regional_SDD_application/` is not part of the {targets} pipeline. It applies 
+the Intermountain West regional Secchi disc depth models (production and 
+band-only) from 
+[regional-clarity-RS-model](https://github.com/rossyndicate/regional-clarity-RS-model) 
+to the site-level pull from group -b-, following that repository's 
+[Applying the model](https://rossyndicate.github.io/regional-clarity-RS-model/applying_the_model.html) 
+directions: each estimate is flagged with the model's applicability checks 
+and scored against the NW Secchi record. Run `NW_CLP_regional_application.Rmd` 
+(production) first; `NW_CLP_regional_application_band_only.Rmd` reuses its 
+caches.
+
+The model files are downloaded from the regional model repository on GitHub, 
+pinned to a commit, and the handoff coefficients from AquaMatch via 
+`AquaMatchr`, so no local copy of the regional repository is required. The 
+model source and pin are set in `regional_SDD_application/regional_model_source.R`; 
+the models will move to the Hugging Face Hub once those repositories are 
+public, which is a change to that file only. This step needs an `EDI_API_key` 
+in `.Renviron`. Results are written to 
+`data/remoteSensing/IMW_regional_model_application/production/` and 
+`.../band_only/`; the caches the notebooks share (QA'd RS data, site 
+characteristics, weather, AquaMatch and model downloads) stay in 
+`data/remoteSensing/IMW_regional_model_application/`. In each results folder, 
+`NW_CLP_full_predictions.csv` holds every QA'd 
+image's estimate with its applicability flags, and `NW_CLP_model_provenance.json` 
+records the model source and commit. `NW_CLP_regional_application_relaxedQA_scratch.Rmd` 
+predicts every siteSR row in the pull, carrying the siteSR QA (strict and 
+relaxed) as flags rather than filters, and writes the estimates with a data 
+dictionary to `.../relaxed_qa/`.
