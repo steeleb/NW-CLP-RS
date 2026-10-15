@@ -2,6 +2,7 @@
 title: "Northern Water / Cache la Poudre Out-of-Sample Application: Band-Only Model"
 author: "B Steele, Colorado State University, ROSSyndicate"
 date: "last updated Oct 15, 2026"
+knit: (function(input, ...) rmarkdown::render(input, output_dir = file.path(rprojroot::find_root(rprojroot::is_rstudio_project, path = dirname(input)), "data", "docs")))
 output:
   html_document:
     fig_retina: 1
